@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mempalace::permissions::grant_claude_permissions;
+use mempalace::permissions::{grant_claude_permissions, grant_copilot_permissions};
 use mempalace::MempalaceConfig;
 
 pub fn run(palace_path: Option<&str>) -> Result<()> {
@@ -11,18 +11,27 @@ pub fn run(palace_path: Option<&str>) -> Result<()> {
     println!("✓ Config saved to: {:?}", MempalaceConfig::config_file_path());
 
     // Grant permanent permissions on first run (idempotent)
-    match grant_claude_permissions() {
+    report_grant("Claude Code", grant_claude_permissions());
+    report_grant("Copilot CLI", grant_copilot_permissions());
+
+    Ok(())
+}
+
+fn report_grant(
+    label: &str,
+    result: Result<Option<mempalace::permissions::GrantResult>, mempalace::MpError>,
+) {
+    let total = mempalace::mcp::tools::tool_names().len();
+    match result {
         Ok(Some(r)) if r.already_granted => {
-            println!("✓ Claude permissions already granted ({} tools)", mempalace::mcp::tools::tool_names().len());
+            println!("✓ {label} permissions already granted ({total} tools)");
         }
         Ok(Some(r)) => {
-            println!("✓ Granted Claude permissions: {} tools added to {}", r.tools_added, r.file.display());
+            println!("✓ {label} permissions: {} tool(s) added to {}", r.tools_added, r.file.display());
         }
         Ok(None) => {}
         Err(e) => {
-            eprintln!("⚠  Could not write Claude permissions ({}). Run `mempalace grant-permissions` later.", e);
+            eprintln!("⚠  Could not write {label} permissions: {e}");
         }
     }
-
-    Ok(())
 }

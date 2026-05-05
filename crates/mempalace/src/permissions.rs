@@ -1,16 +1,17 @@
 /// Grant all MemPalace MCP tools permanent permission in Claude Code and
-/// any other AI tool whose permission model we know about.
+/// GitHub Copilot CLI.
 ///
-/// Currently handles:
+/// Handles:
 ///   - Claude Code  → ~/.claude/settings.local.json  `permissions.allow[]`
+///   - Copilot CLI  → ~/.copilot/permissions-config.json  `locations[home]["tool_approvals"]`
 ///
-/// This is idempotent: safe to call on every `mempalace init`.
+/// Both operations are idempotent: safe to call on every `mempalace init`.
 use crate::error::MpError;
 use crate::mcp::tools::tool_names;
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
-// Public entry point
+// Public types
 // ---------------------------------------------------------------------------
 
 pub struct GrantResult {
@@ -19,10 +20,14 @@ pub struct GrantResult {
     pub file: PathBuf,
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code
+// ---------------------------------------------------------------------------
+
 /// Grant permanent permission for all MemPalace tools in Claude Code.
-/// Returns `Ok(None)` if Claude settings are not present (Claude not installed).
+/// Returns `Ok(None)` if Claude settings directory does not exist.
 pub fn grant_claude_permissions() -> Result<Option<GrantResult>, MpError> {
-    let settings_path = claude_settings_path()?;
+    let settings_path = home_path(&[".claude", "settings.local.json"])?;
 
     // Read existing settings (or start fresh)
     let mut settings: serde_json::Value = if settings_path.exists() {
@@ -55,7 +60,6 @@ pub fn grant_claude_permissions() -> Result<Option<GrantResult>, MpError> {
             (added, added == 0)
         }
         None => {
-            // Create the nested structure
             let arr: Vec<serde_json::Value> = mcp_entries
                 .iter()
                 .map(|e| serde_json::Value::String(e.clone()))
@@ -65,24 +69,94 @@ pub fn grant_claude_permissions() -> Result<Option<GrantResult>, MpError> {
         }
     };
 
-    // Write back atomically
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = settings_path.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&settings)?)?;
-    std::fs::rename(&tmp, &settings_path)?;
-
+    atomic_write_json(&settings_path, &settings)?;
     Ok(Some(GrantResult { already_granted, tools_added, file: settings_path }))
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Copilot CLI
+// ---------------------------------------------------------------------------
+
+/// Grant permanent permission for all MemPalace MCP tools in Copilot CLI.
+/// Returns `Ok(None)` if `~/.copilot/` does not exist (Copilot not installed).
+pub fn grant_copilot_permissions() -> Result<Option<GrantResult>, MpError> {
+    let copilot_dir = home_path(&[".copilot"])?;
+    if !copilot_dir.exists() {
+        return Ok(None);
+    }
+
+    let perms_path = copilot_dir.join("permissions-config.json");
+    let home = home_str()?;
+
+    // Read or create the config
+    let mut config: serde_json::Value = if perms_path.exists() {
+        let content = std::fs::read_to_string(&perms_path)?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({ "locations": {} }))
+    } else {
+        serde_json::json!({ "locations": {} })
+    };
+
+    // Ensure locations[home][tool_approvals] exists
+    if config["locations"].get(&home).is_none() {
+        config["locations"][&home] = serde_json::json!({ "tool_approvals": [] });
+    }
+    if config["locations"][&home].get("tool_approvals").is_none() {
+        config["locations"][&home]["tool_approvals"] = serde_json::json!([]);
+    }
+
+    let approvals = config["locations"][&home]["tool_approvals"]
+        .as_array_mut()
+        .ok_or_else(|| MpError::Validation("tool_approvals is not an array".to_string()))?;
+
+    let tools = tool_names();
+    let before = approvals.len();
+
+    for tool in &tools {
+        let already = approvals.iter().any(|entry| {
+            entry.get("kind").and_then(|v| v.as_str()) == Some("mcp")
+                && entry.get("serverName").and_then(|v| v.as_str()) == Some("mempalace")
+                && entry.get("toolName").and_then(|v| v.as_str()) == Some(tool)
+        });
+        if !already {
+            approvals.push(serde_json::json!({
+                "kind": "mcp",
+                "serverName": "mempalace",
+                "toolName": tool
+            }));
+        }
+    }
+
+    let tools_added = approvals.len() - before;
+    let already_granted = tools_added == 0;
+
+    atomic_write_json(&perms_path, &config)?;
+    Ok(Some(GrantResult { already_granted, tools_added, file: perms_path }))
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn claude_settings_path() -> Result<PathBuf, MpError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        MpError::Validation("Cannot determine home directory".to_string())
-    })?;
-    Ok(home.join(".claude").join("settings.local.json"))
+fn home_dir() -> Result<PathBuf, MpError> {
+    dirs::home_dir().ok_or_else(|| MpError::Validation("Cannot determine home directory".to_string()))
+}
+
+fn home_str() -> Result<String, MpError> {
+    home_dir().map(|p| p.to_string_lossy().to_string())
+}
+
+fn home_path(components: &[&str]) -> Result<PathBuf, MpError> {
+    let mut path = home_dir()?;
+    for c in components { path = path.join(c); }
+    Ok(path)
+}
+
+fn atomic_write_json(path: &PathBuf, value: &serde_json::Value) -> Result<(), MpError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(value)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
