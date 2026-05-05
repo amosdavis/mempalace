@@ -464,11 +464,12 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
             let stats = store.get_stats()?;
             let kg = KnowledgeGraph::open(&MempalaceConfig::knowledge_graph_path())?;
             let kg_stats = kg.stats()?;
-            let recent = store.list_drawers(Some("wing_agent"), None, Some(5))?;
-            let diary: Vec<Value> = recent.into_iter().map(|m| {
-                let content = store.get_drawer(&m.drawer_id).map(|d| d.content).unwrap_or_default();
-                json!({"room": m.room, "content": content})
-            }).collect();
+            let diary: Vec<Value> = store
+                .list_drawers_with_content(Some("wing_agent"), None, 5)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(m, content)| json!({"room": m.room, "content": content}))
+                .collect();
             Ok(json!({
                 "palace_stats": stats,
                 "kg_stats": kg_stats,

@@ -4,7 +4,8 @@
 # What this does:
 #   1. Copies SKILL.md to the Copilot CLI skills directory
 #   2. Configures the MCP server so Copilot CLI can call MemPalace tools
-#   3. Writes a copilot() wrapper to .bashrc/.zshrc so sessions are auto-mined
+#   3. Appends MemPalace wake-up instructions to ~/.copilot/copilot-instructions.md
+#   4. Writes a copilot() wrapper to .bashrc/.zshrc so sessions are auto-mined
 #
 # Usage:
 #   ./install.sh
@@ -107,7 +108,35 @@ merge_mcp_config "$MCP_CONFIG" "$SERVER_ENTRY"
 ok "MCP server configured in $MCP_CONFIG"
 
 # ---------------------------------------------------------------------------
-# Shell wrapper — auto-mine Copilot sessions after each invocation
+# copilot-instructions.md — inject auto-wake-up directive
+# ---------------------------------------------------------------------------
+# This is the ONLY mechanism that fires at the start of every Copilot session.
+# Without it, mempalace_wake_up is never called and the palace sits idle.
+INSTRUCTIONS_FILE="$COPILOT_HOME/copilot-instructions.md"
+INSTRUCTIONS_MARKER="<!-- MEMPALACE_WAKE_UP_INSTALLED -->"
+
+if grep -q "$INSTRUCTIONS_MARKER" "$INSTRUCTIONS_FILE" 2>/dev/null; then
+    ok "MemPalace wake-up already in $INSTRUCTIONS_FILE"
+else
+    touch "$INSTRUCTIONS_FILE"
+    cat >> "$INSTRUCTIONS_FILE" << 'INSTREOF'
+
+# MemPalace Memory System
+<!-- MEMPALACE_WAKE_UP_INSTALLED -->
+You have a local memory palace (mempalace MCP server) connected via MCP tools.
+
+**MANDATORY: At the very start of every new session, call `mempalace_wake_up` BEFORE responding to the first user message.** This loads palace statistics, recent diary entries, knowledge graph state, and the AAAK compression spec. Do not skip this step — without it you have no memory of prior conversations, people, or project context.
+
+After wake-up, follow this protocol:
+- **BEFORE** answering questions about any person, project, or past event: call `mempalace_search` or `mempalace_kg_query` first. Never guess — verify from the palace.
+- **DURING** sessions: file important discoveries with `mempalace_add_drawer` immediately. Do not defer.
+- **AFTER** each session: call `mempalace_diary_write` with `agent_name: "copilot"` and a summary of what happened and what you learned.
+
+Use `/mempalace` to invoke the full skill for detailed tool documentation and slash commands.
+INSTREOF
+    ok "MemPalace wake-up directive written to $INSTRUCTIONS_FILE"
+fi
+
 # ---------------------------------------------------------------------------
 WRAPPER_MARKER="# mempalace-copilot-wrapper"
 WRAPPER=$(cat <<SHELLEOF

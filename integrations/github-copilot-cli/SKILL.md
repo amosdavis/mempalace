@@ -48,11 +48,13 @@ Use `/mempalace` in any Copilot CLI prompt to invoke this skill explicitly:
 
 ## Protocol — FOLLOW THIS EVERY SESSION
 
-1. **ON WAKE-UP**: Call `mempalace_status` to load palace overview and AAAK dialect spec. Do this before anything else.
+> **Auto-start**: `mempalace_wake_up` is called automatically at the start of every session via Copilot's custom instructions. You do not need to call it manually unless the palace context is missing.
+
+1. **ON WAKE-UP**: Call `mempalace_wake_up` — returns palace stats, recent diary, KG stats, and AAAK spec in one call. Do this before anything else. (`mempalace_status` also works but returns less context.)
 2. **BEFORE RESPONDING** about any person, project, or past event: call `mempalace_search` or `mempalace_kg_query` FIRST. Never guess — verify from the palace. Wrong is worse than slow.
 3. **IF UNSURE** about a fact (name, status, relationship, preference): say "let me check" and query. Return the verbatim drawer text.
 4. **DURING WORK**: File important discoveries and decisions immediately with `mempalace_add_drawer`. Do not defer to session end.
-5. **AFTER EACH SESSION**: Call `mempalace_diary_write` to record what happened, what you learned, what changed.
+5. **AFTER EACH SESSION**: Call `mempalace_diary_write` with `agent_name: "copilot"` to record what happened, what you learned, what changed.
 6. **WHEN FACTS CHANGE**: Call `mempalace_kg_invalidate` on the old fact, `mempalace_kg_add` for the new one.
 
 ## Available Tools
