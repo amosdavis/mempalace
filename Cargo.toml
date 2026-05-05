@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/mempalace", "crates/mp"]
+resolver = "2"
