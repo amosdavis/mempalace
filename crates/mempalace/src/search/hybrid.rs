@@ -45,15 +45,10 @@ pub fn search_memories(
     let fts_results = store.fts_search(query, wing, room, fts_limit).unwrap_or_default();
 
     let candidates: Vec<(DrawerMetadata, String, f64)> = if fts_results.is_empty() {
-        store.list_drawers(wing, room, Some(fts_limit))
+        store.list_drawers_with_content(wing, room, fts_limit)
             .unwrap_or_default()
             .into_iter()
-            .map(|m| {
-                let content = store.get_drawer(&m.drawer_id)
-                    .map(|d| d.content)
-                    .unwrap_or_default();
-                (m, content, 0.0)
-            })
+            .map(|(m, content)| (m, content, 0.0))
             .collect()
     } else {
         fts_results

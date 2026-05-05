@@ -43,6 +43,8 @@ impl PalaceStore {
         std::fs::create_dir_all(palace_path)?;
         let db_path = std::path::Path::new(palace_path).join("palace.sqlite3");
         let conn = Connection::open(&db_path)?;
+        // Wait up to 5 seconds for write-lock contention (background miners, git hooks)
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         let store = Self { conn };
         store.create_schema()?;
@@ -239,6 +241,53 @@ impl PalaceStore {
         Ok(rows)
     }
 
+    /// Like `list_drawers` but fetches content in the same query, avoiding N+1 round-trips.
+    pub fn list_drawers_with_content(
+        &self,
+        wing: Option<&str>,
+        room: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<(DrawerMetadata, String)>, MpError> {
+        let base = "SELECT drawer_id, wing, room, source_file, source_mtime, \
+                           chunk_index, type, created_at, content_hash, content \
+                    FROM drawers";
+        let rows = match (wing, room) {
+            (Some(w), Some(r)) => {
+                let sql = format!("{base} WHERE wing = ?1 AND room = ?2 ORDER BY created_at DESC LIMIT ?3");
+                let mut s = self.conn.prepare(&sql)?;
+                let v = s.query_map(params![w, r, limit], |row| {
+                    Ok((Self::row_to_metadata(row)?, row.get(9)?))
+                })?.collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (Some(w), None) => {
+                let sql = format!("{base} WHERE wing = ?1 ORDER BY created_at DESC LIMIT ?2");
+                let mut s = self.conn.prepare(&sql)?;
+                let v = s.query_map(params![w, limit], |row| {
+                    Ok((Self::row_to_metadata(row)?, row.get(9)?))
+                })?.collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (None, Some(r)) => {
+                let sql = format!("{base} WHERE room = ?1 ORDER BY created_at DESC LIMIT ?2");
+                let mut s = self.conn.prepare(&sql)?;
+                let v = s.query_map(params![r, limit], |row| {
+                    Ok((Self::row_to_metadata(row)?, row.get(9)?))
+                })?.collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (None, None) => {
+                let sql = format!("{base} ORDER BY created_at DESC LIMIT ?1");
+                let mut s = self.conn.prepare(&sql)?;
+                let v = s.query_map(params![limit], |row| {
+                    Ok((Self::row_to_metadata(row)?, row.get(9)?))
+                })?.collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+        };
+        Ok(rows)
+    }
+
     pub fn delete_drawer(&self, drawer_id: &str) -> Result<bool, MpError> {
         let n = self.conn.execute(
             "DELETE FROM drawers WHERE drawer_id = ?1",
@@ -276,6 +325,39 @@ impl PalaceStore {
         Ok(v)
     }
 
+    /// Build an FTS5 MATCH expression that uses OR between individual terms for
+    /// maximum recall. Single-quoted tokens handle special characters safely.
+    fn build_fts_query(query: &str) -> String {
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .filter(|t| t.len() >= 2)
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect();
+        if terms.is_empty() {
+            // Fall back to a wildcard that FTS5 accepts for "match all"
+            return "\"\"".to_string();
+        }
+        terms.join(" OR ")
+    }
+
+    fn map_fts_row(row: &rusqlite::Row) -> rusqlite::Result<(DrawerMetadata, String, f64)> {
+        Ok((
+            DrawerMetadata {
+                drawer_id:    row.get(0)?,
+                wing:         row.get(1)?,
+                room:         row.get(2)?,
+                source_file:  row.get(3)?,
+                source_mtime: row.get(4)?,
+                chunk_index:  row.get(5)?,
+                type_:        row.get(6)?,
+                created_at:   row.get(7)?,
+                content_hash: row.get(8)?,
+            },
+            row.get::<_, String>(9)?,
+            row.get::<_, f64>(10)?,
+        ))
+    }
+
     pub fn fts_search(
         &self,
         query: &str,
@@ -283,60 +365,43 @@ impl PalaceStore {
         room: Option<&str>,
         limit: i64,
     ) -> Result<Vec<(DrawerMetadata, String, f64)>, MpError> {
-        let fts_query = query.replace('"', "\"\"");
-        let fts_query = format!("\"{}\"", fts_query);
+        let fts_match = Self::build_fts_query(query);
+        let base_select = "SELECT d.drawer_id, d.wing, d.room, d.source_file, d.source_mtime, \
+                                  d.chunk_index, d.type, d.created_at, d.content_hash, d.content, \
+                                  bm25(drawers_fts) as score \
+                           FROM drawers_fts \
+                           JOIN drawers d ON drawers_fts.rowid = d.rowid";
 
-        let sql = match (wing, room) {
-            (Some(w), Some(r)) => format!(
-                r#"SELECT d.drawer_id, d.wing, d.room, d.source_file, d.source_mtime,
-                          d.chunk_index, d.type, d.created_at, d.content_hash, d.content,
-                          bm25(drawers_fts) as score
-                   FROM drawers_fts
-                   JOIN drawers d ON drawers_fts.rowid = d.rowid
-                   WHERE drawers_fts MATCH {fts:?} AND d.wing = {w:?} AND d.room = {r:?}
-                   ORDER BY score LIMIT {limit}"#,
-                fts = fts_query, w = w, r = r
-            ),
-            (Some(w), None) => format!(
-                r#"SELECT d.drawer_id, d.wing, d.room, d.source_file, d.source_mtime,
-                          d.chunk_index, d.type, d.created_at, d.content_hash, d.content,
-                          bm25(drawers_fts) as score
-                   FROM drawers_fts
-                   JOIN drawers d ON drawers_fts.rowid = d.rowid
-                   WHERE drawers_fts MATCH {fts:?} AND d.wing = {w:?}
-                   ORDER BY score LIMIT {limit}"#,
-                fts = fts_query, w = w
-            ),
-            _ => format!(
-                r#"SELECT d.drawer_id, d.wing, d.room, d.source_file, d.source_mtime,
-                          d.chunk_index, d.type, d.created_at, d.content_hash, d.content,
-                          bm25(drawers_fts) as score
-                   FROM drawers_fts
-                   JOIN drawers d ON drawers_fts.rowid = d.rowid
-                   WHERE drawers_fts MATCH {fts:?}
-                   ORDER BY score LIMIT {limit}"#,
-                fts = fts_query
-            ),
+        let rows = match (wing, room) {
+            (Some(w), Some(r)) => {
+                let sql = format!("{base_select} WHERE drawers_fts MATCH ?1 AND d.wing = ?2 AND d.room = ?3 ORDER BY score LIMIT ?4");
+                let mut stmt = self.conn.prepare(&sql)?;
+                let v = stmt.query_map(params![fts_match, w, r, limit], Self::map_fts_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (Some(w), None) => {
+                let sql = format!("{base_select} WHERE drawers_fts MATCH ?1 AND d.wing = ?2 ORDER BY score LIMIT ?3");
+                let mut stmt = self.conn.prepare(&sql)?;
+                let v = stmt.query_map(params![fts_match, w, limit], Self::map_fts_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (None, Some(r)) => {
+                let sql = format!("{base_select} WHERE drawers_fts MATCH ?1 AND d.room = ?2 ORDER BY score LIMIT ?3");
+                let mut stmt = self.conn.prepare(&sql)?;
+                let v = stmt.query_map(params![fts_match, r, limit], Self::map_fts_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (None, None) => {
+                let sql = format!("{base_select} WHERE drawers_fts MATCH ?1 ORDER BY score LIMIT ?2");
+                let mut stmt = self.conn.prepare(&sql)?;
+                let v = stmt.query_map(params![fts_match, limit], Self::map_fts_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
         };
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                DrawerMetadata {
-                    drawer_id:    row.get(0)?,
-                    wing:         row.get(1)?,
-                    room:         row.get(2)?,
-                    source_file:  row.get(3)?,
-                    source_mtime: row.get(4)?,
-                    chunk_index:  row.get(5)?,
-                    type_:        row.get(6)?,
-                    created_at:   row.get(7)?,
-                    content_hash: row.get(8)?,
-                },
-                row.get::<_, String>(9)?,
-                row.get::<_, f64>(10)?,
-            ))
-        })?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
