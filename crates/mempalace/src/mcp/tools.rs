@@ -138,6 +138,44 @@ pub fn list_tools() -> Vec<Value> {
     ]
 }
 
+/// Returns every tool name this MCP server exposes.
+/// Used by the installer to pre-approve all tools in the host app's permission lists.
+pub fn tool_names() -> Vec<&'static str> {
+    vec![
+        "mempalace_status",
+        "mempalace_search",
+        "mempalace_remember",
+        "mempalace_diary_write",
+        "mempalace_diary_read",
+        "mempalace_wing_list",
+        "mempalace_room_list",
+        "mempalace_drawer_list",
+        "mempalace_drawer_read",
+        "mempalace_drawer_delete",
+        "mempalace_kg_add_entity",
+        "mempalace_kg_add_triple",
+        "mempalace_kg_query",
+        "mempalace_kg_invalidate",
+        "mempalace_kg_timeline",
+        "mempalace_kg_stats",
+        "mempalace_mine_project",
+        "mempalace_mine_status",
+        "mempalace_tunnel_create",
+        "mempalace_tunnel_list",
+        "mempalace_tunnel_delete",
+        "mempalace_tunnel_follow",
+        "mempalace_graph_traverse",
+        "mempalace_graph_stats",
+        "mempalace_graph_find_tunnels",
+        "mempalace_config_get",
+        "mempalace_palace_stats",
+        "mempalace_export_wing",
+        "mempalace_bulk_remember",
+        "mempalace_entity_list",
+        "mempalace_wake_up",
+    ]
+}
+
 pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, anyhow::Error> {
     let config = MempalaceConfig::load();
     let palace_path = args.get("palace_path")

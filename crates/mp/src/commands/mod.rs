@@ -1,4 +1,5 @@
 pub mod config_cmd;
+pub mod grant_permissions;
 pub mod hook;
 pub mod init;
 pub mod mcp;

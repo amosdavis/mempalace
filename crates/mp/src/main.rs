@@ -70,6 +70,8 @@ enum Commands {
         #[command(subcommand)]
         subcommand: ConfigCommand,
     },
+    /// Grant permanent permissions for all MemPalace tools in Claude Code (idempotent)
+    GrantPermissions,
     /// Watch a directory and auto-mine on changes
     Watch {
         /// Directory to watch
@@ -154,5 +156,6 @@ fn main() -> Result<()> {
             ConfigCommand::Get { key } => commands::config_cmd::run_get(&key),
         },
         Commands::Watch { dir, wing } => commands::watch::run(&dir, &wing, palace),
+        Commands::GrantPermissions => commands::grant_permissions::run(),
     }
 }

@@ -8,6 +8,7 @@ pub mod kg;
 pub mod palace_graph;
 pub mod mining;
 pub mod mcp;
+pub mod permissions;
 
 pub use error::MpError;
 pub use config::MempalaceConfig;
