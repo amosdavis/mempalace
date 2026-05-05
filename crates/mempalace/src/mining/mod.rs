@@ -1,5 +1,6 @@
 pub mod gitignore;
 pub mod progress;
+pub mod sessions;
 
 use crate::error::MpError;
 use crate::storage::{PalaceStore, Embedder};
@@ -185,6 +186,11 @@ fn count_mineable_files(project_dir: &Path, gitignore: &GitignoreFilter) -> usiz
             !gitignore.is_ignored(p)
         })
         .count()
+}
+
+/// Public wrapper for the chunk function (used by sessions miner)
+pub fn chunk_text_pub(text: &str, size: usize, overlap: usize) -> Vec<String> {
+    chunk_text(text, size, overlap)
 }
 
 fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {

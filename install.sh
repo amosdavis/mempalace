@@ -138,15 +138,58 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Done
+# Global git post-commit hook
 # ---------------------------------------------------------------------------
+section "Global git post-commit hook"
+
+GIT_HOOKS_DIR="$HOME/.mempalace/git-hooks"
+mkdir -p "$GIT_HOOKS_DIR"
+
+POST_COMMIT="$GIT_HOOKS_DIR/post-commit"
+cat > "$POST_COMMIT" <<HOOKEOF
+#!/usr/bin/env bash
+# MemPalace global post-commit hook
+# Mines the current project into the palace after every git commit.
+# To disable: mempalace config set auto_mine_on_git_commit false
+set -euo pipefail
+MP="${ACTUAL_BIN}"
+if ! command -v "\$MP" &>/dev/null && [ ! -x "\$MP" ]; then exit 0; fi
+if "\$MP" config get auto_mine_on_git_commit 2>/dev/null | grep -q "^true$"; then
+    WING="project_\$(basename "\$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+    "\$MP" mine "\$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --wing "\$WING" &>/dev/null &
+    disown 2>/dev/null || true
+fi
+HOOKEOF
+chmod +x "$POST_COMMIT"
+ok "Post-commit hook installed to $GIT_HOOKS_DIR/post-commit"
+
+# Set as global hooks path
+if git config --global core.hooksPath "$GIT_HOOKS_DIR" 2>/dev/null; then
+    ok "git config --global core.hooksPath set to $GIT_HOOKS_DIR"
+else
+    warn "Could not set global git hooksPath — run manually:"
+    warn "  git config --global core.hooksPath $GIT_HOOKS_DIR"
+fi
+
+
 echo
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "  ${GREEN}✓${NC}  MemPalace integration complete"
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
-echo "  Restart any open AI tools for changes to take effect."
+echo "  Restart any open AI tools and reload your shell:"
+echo "    source ~/.bashrc  (or ~/.zshrc)"
 echo
-echo "  Backfill past Claude sessions (optional, run once):"
-echo "    $ACTUAL_BIN mine ~/.claude/projects/ --wing conversations"
+echo "  ── Backfill past sessions (run once) ──"
+echo "    $ACTUAL_BIN mine-sessions --copilot    # Copilot CLI history"
+echo "    $ACTUAL_BIN mine-sessions --claude     # Claude history"
+echo
+echo "  ── Auto-mining (on by default) ──"
+echo "    Copilot: after each session via shell wrapper"
+echo "    Claude:  after each session via Stop/PreCompact hooks"
+echo "    Git:     after each commit via global post-commit hook"
+echo
+echo "  ── Opt-out ──"
+echo "    $ACTUAL_BIN config set auto_mine_copilot_sessions false"
+echo "    $ACTUAL_BIN config set auto_mine_on_git_commit false"
 echo

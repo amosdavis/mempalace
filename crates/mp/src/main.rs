@@ -29,6 +29,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Mine AI conversation sessions (Copilot, Claude) into the palace
+    MineSessions {
+        /// Mine Copilot CLI session history
+        #[arg(long)]
+        copilot: bool,
+        /// Mine Claude session history
+        #[arg(long)]
+        claude: bool,
+    },
     /// Search the palace
     Search {
         query: String,
@@ -56,6 +65,20 @@ enum Commands {
         #[command(subcommand)]
         subcommand: HookCommand,
     },
+    /// Read or write a config value
+    Config {
+        #[command(subcommand)]
+        subcommand: ConfigCommand,
+    },
+    /// Watch a directory and auto-mine on changes
+    Watch {
+        /// Directory to watch
+        #[arg(default_value = ".")]
+        dir: String,
+        /// Wing to store changes in
+        #[arg(long, default_value = "wing_code")]
+        wing: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -64,6 +87,19 @@ enum HookCommand {
     Stop,
     /// Handle Claude Code PreCompact hook (mine transcript before compaction)
     Precompact,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Set a config key to a value
+    Set {
+        key: String,
+        value: String,
+    },
+    /// Get the current value of a config key
+    Get {
+        key: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -81,6 +117,20 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init => commands::init::run(palace),
         Commands::Mine { dir, wing, force } => commands::mine::run(&dir, &wing, force, palace),
+        Commands::MineSessions { copilot, claude } => {
+            if copilot {
+                commands::mine_sessions::run_copilot(palace)?;
+            }
+            if claude {
+                commands::mine_sessions::run_claude(palace)?;
+            }
+            if !copilot && !claude {
+                // Default: mine both
+                commands::mine_sessions::run_copilot(palace)?;
+                commands::mine_sessions::run_claude(palace)?;
+            }
+            Ok(())
+        }
         Commands::Search { query, wing, room, n } => {
             commands::search::run(&query, wing.as_deref(), room.as_deref(), n, palace)
         }
@@ -99,5 +149,10 @@ fn main() -> Result<()> {
             HookCommand::Stop => commands::hook::run_stop(),
             HookCommand::Precompact => commands::hook::run_precompact(),
         },
+        Commands::Config { subcommand } => match subcommand {
+            ConfigCommand::Set { key, value } => commands::config_cmd::run_set(&key, &value),
+            ConfigCommand::Get { key } => commands::config_cmd::run_get(&key),
+        },
+        Commands::Watch { dir, wing } => commands::watch::run(&dir, &wing, palace),
     }
 }

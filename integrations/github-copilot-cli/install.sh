@@ -4,6 +4,7 @@
 # What this does:
 #   1. Copies SKILL.md to the Copilot CLI skills directory
 #   2. Configures the MCP server so Copilot CLI can call MemPalace tools
+#   3. Writes a copilot() wrapper to .bashrc/.zshrc so sessions are auto-mined
 #
 # Usage:
 #   ./install.sh
@@ -106,6 +107,51 @@ merge_mcp_config "$MCP_CONFIG" "$SERVER_ENTRY"
 ok "MCP server configured in $MCP_CONFIG"
 
 # ---------------------------------------------------------------------------
+# Shell wrapper — auto-mine Copilot sessions after each invocation
+# ---------------------------------------------------------------------------
+WRAPPER_MARKER="# mempalace-copilot-wrapper"
+WRAPPER=$(cat <<SHELLEOF
+
+$WRAPPER_MARKER
+# Auto-mines MemPalace after each Copilot CLI session.
+# To disable: mempalace config set auto_mine_copilot_sessions false
+function copilot() {
+    command copilot "\$@"
+    local _exit=\$?
+    if "$ACTUAL_BIN" config get auto_mine_copilot_sessions 2>/dev/null | grep -q "^true$"; then
+        "$ACTUAL_BIN" mine-sessions --copilot &>/dev/null &
+        disown 2>/dev/null || true
+    fi
+    return \$_exit
+}
+SHELLEOF
+)
+
+add_wrapper_to_rc() {
+    local rc="$1"
+    if [ -f "$rc" ] && grep -q "$WRAPPER_MARKER" "$rc" 2>/dev/null; then
+        ok "Shell wrapper already in $rc"
+        return
+    fi
+    printf '%s\n' "$WRAPPER" >> "$rc"
+    ok "Shell wrapper added to $rc"
+}
+
+# Detect shells in use
+RC_FILES_UPDATED=0
+for rc_candidate in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [ -f "$rc_candidate" ]; then
+        add_wrapper_to_rc "$rc_candidate"
+        RC_FILES_UPDATED=1
+    fi
+done
+
+if [ "$RC_FILES_UPDATED" -eq 0 ]; then
+    # Neither exists yet; default to .bashrc
+    add_wrapper_to_rc "$HOME/.bashrc"
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 echo
@@ -116,5 +162,14 @@ echo
 echo "Test it: type '/mempalace search for what we decided about auth'"
 echo "         or ask 'What do you remember about me?' (Copilot auto-selects the skill)"
 echo
-echo "Backfill past sessions (optional):"
-echo "  $ACTUAL_BIN mine ~/.claude/projects/ --wing conversations"
+echo "After each 'copilot' session, MemPalace mines it automatically."
+echo "To disable: mempalace config set auto_mine_copilot_sessions false"
+echo
+echo "Backfill past Copilot sessions (run once):"
+echo "  $ACTUAL_BIN mine-sessions --copilot"
+echo
+echo "Backfill past Claude sessions (run once):"
+echo "  $ACTUAL_BIN mine-sessions --claude"
+echo
+echo "Reload your shell: source ~/.bashrc  (or ~/.zshrc)"
+

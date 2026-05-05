@@ -1,8 +1,11 @@
+pub mod config_cmd;
 pub mod hook;
 pub mod init;
 pub mod mcp;
 pub mod mine;
+pub mod mine_sessions;
 pub mod progress;
 pub mod search;
 pub mod status;
 pub mod wake_up;
+pub mod watch;
