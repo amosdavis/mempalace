@@ -1,8 +1,10 @@
 pub mod gitignore;
+pub mod progress;
 
 use crate::error::MpError;
 use crate::storage::{PalaceStore, Embedder};
 use gitignore::GitignoreFilter;
+use progress::{MineProgress, MineStatus, write_progress};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use std::path::Path;
@@ -47,6 +49,12 @@ pub fn mine_project(
 ) -> Result<MineStats, MpError> {
     let store = PalaceStore::open(palace_path)?;
     let gitignore = GitignoreFilter::new(project_dir);
+
+    // --- Pre-scan: count mineable files so the progress bar has a denominator ---
+    let files_total = count_mineable_files(project_dir, &gitignore);
+    let dir_str = project_dir.to_string_lossy().to_string();
+    let mut prog = MineProgress::new(&dir_str, wing, files_total);
+    write_progress(&prog);
 
     let mut stats = MineStats {
         files_processed: 0,
@@ -112,6 +120,14 @@ pub fn mine_project(
             pending.push((chunk, room.clone(), source_file.clone(), mtime, i as i64));
         }
         stats.files_processed += 1;
+
+        // Update progress after each file processed
+        prog.files_done = stats.files_processed;
+        prog.files_skipped = stats.files_skipped;
+        prog.current_file = path.strip_prefix(project_dir).unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        write_progress(&prog);
     }
 
     for batch in pending.chunks(EMBED_BATCH_SIZE) {
@@ -124,9 +140,51 @@ pub fn mine_project(
                 Some(source_file.as_str()), *mtime, Some(*chunk_idx), emb)?;
             stats.chunks_created += 1;
         }
+        prog.chunks_created = stats.chunks_created;
+        write_progress(&prog);
     }
 
+    // Write final "done" state
+    prog.status = MineStatus::Done;
+    prog.files_done = stats.files_processed;
+    prog.files_skipped = stats.files_skipped;
+    prog.chunks_created = stats.chunks_created;
+    prog.errors_count = stats.errors.len();
+    prog.current_file = String::new();
+    prog.end_unix = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0),
+    );
+    write_progress(&prog);
+
     Ok(stats)
+}
+
+fn count_mineable_files(project_dir: &Path, gitignore: &GitignoreFilter) -> usize {
+    WalkDir::new(project_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().is_dir() {
+                return !SKIP_DIRS.contains(&name.as_ref());
+            }
+            true
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            let p = e.path();
+            if let Some(ext) = p.extension() {
+                if BINARY_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_ref()) {
+                    return false;
+                }
+            }
+            !gitignore.is_ignored(p)
+        })
+        .count()
 }
 
 fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {

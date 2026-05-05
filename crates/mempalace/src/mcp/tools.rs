@@ -1,6 +1,7 @@
 use crate::config::MempalaceConfig;
 use crate::kg::KnowledgeGraph;
 use crate::mining::mine_project;
+use crate::mining::progress::read_progress;
 use crate::palace_graph::PalaceGraph;
 use crate::search::hybrid::search_memories;
 use crate::storage::{Embedder, PalaceStore};
@@ -84,12 +85,14 @@ pub fn list_tools() -> Vec<Value> {
             json!({"type":"object","properties":{"limit":{"type":"integer"}},"required":[]})),
         make_tool("mempalace_kg_stats", "Get KG stats",
             json!({"type":"object","properties":{},"required":[]})),
-        make_tool("mempalace_mine_project", "Mine a project directory",
+        make_tool("mempalace_mine_project", "Mine a project directory (blocking; writes progress to ~/.mempalace/mine_progress.json)",
             json!({"type":"object","properties":{
                 "project_dir":{"type":"string"},
                 "wing":{"type":"string"},
                 "force":{"type":"boolean"}
             },"required":["project_dir"]})),
+        make_tool("mempalace_mine_status", "Show mining progress (status bar, elapsed, ETA, current file). Call while mining is running or after it finishes.",
+            json!({"type":"object","properties":{},"required":[]})),
         make_tool("mempalace_tunnel_create", "Create a tunnel between rooms",
             json!({"type":"object","properties":{
                 "from_wing":{"type":"string"},
@@ -296,6 +299,28 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
                 palace_path, wing, Some(&embedder), force,
             )?;
             Ok(serde_json::to_value(&stats)?)
+        }
+
+        "mempalace_mine_status" => {
+            match read_progress() {
+                None => Ok(json!({
+                    "status": "idle",
+                    "message": "No mining in progress. Run mempalace_mine_project to start."
+                })),
+                Some(p) => Ok(json!({
+                    "status": format!("{:?}", p.status).to_lowercase(),
+                    "display": p.format_display(),
+                    "dir": p.dir,
+                    "wing": p.wing,
+                    "files_done": p.files_done,
+                    "files_total": p.files_total,
+                    "files_skipped": p.files_skipped,
+                    "chunks_created": p.chunks_created,
+                    "elapsed_secs": p.elapsed_secs(),
+                    "eta_secs": p.eta_secs(),
+                    "current_file": p.current_file,
+                })),
+            }
         }
 
         "mempalace_tunnel_create" => {

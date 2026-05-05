@@ -39,6 +39,8 @@ enum Commands {
         #[arg(long, short, default_value = "5")]
         n: usize,
     },
+    /// Show status and progress of an in-progress or most recent mine operation
+    Progress,
     /// Show palace status
     Status,
     /// Start MCP server over stdio (or pass --install to print setup command)
@@ -49,6 +51,19 @@ enum Commands {
     },
     /// Wake-up summary
     WakeUp,
+    /// Hook handlers for Claude Code / Codex CLI integration
+    Hook {
+        #[command(subcommand)]
+        subcommand: HookCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCommand {
+    /// Handle Claude Code Stop hook (count messages, optionally block for save)
+    Stop,
+    /// Handle Claude Code PreCompact hook (mine transcript before compaction)
+    Precompact,
 }
 
 fn main() -> Result<()> {
@@ -69,6 +84,7 @@ fn main() -> Result<()> {
         Commands::Search { query, wing, room, n } => {
             commands::search::run(&query, wing.as_deref(), room.as_deref(), n, palace)
         }
+        Commands::Progress => commands::progress::run(),
         Commands::Status => commands::status::run(palace),
         Commands::Mcp { install } => {
             if install {
@@ -79,5 +95,9 @@ fn main() -> Result<()> {
             }
         }
         Commands::WakeUp => commands::wake_up::run(palace),
+        Commands::Hook { subcommand } => match subcommand {
+            HookCommand::Stop => commands::hook::run_stop(),
+            HookCommand::Precompact => commands::hook::run_precompact(),
+        },
     }
 }

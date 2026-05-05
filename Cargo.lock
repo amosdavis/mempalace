@@ -1163,8 +1163,11 @@ name = "mp"
 version = "3.3.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
+ "dirs",
  "mempalace",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

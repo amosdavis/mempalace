@@ -76,6 +76,7 @@ Copilot will also auto-select the skill when your prompt involves memory or reca
 ```
 mempalace init               Initialize or verify the palace
 mempalace mine <dir>         Mine a project directory
+mempalace progress           Show mining status bar (elapsed, ETA, current file)
 mempalace search <query>     Semantic search
 mempalace status             Show palace stats
 mempalace mcp                Start MCP JSON-RPC server (stdio)
