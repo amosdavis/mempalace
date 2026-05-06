@@ -88,7 +88,8 @@ pub fn list_tools() -> Vec<Value> {
             json!({"type":"object","properties":{
                 "project_dir":{"type":"string"},
                 "wing":{"type":"string"},
-                "force":{"type":"boolean"}
+                "force":{"type":"boolean"},
+                "concurrency":{"type":"integer","description":"Max concurrent mining jobs (1-64). Overrides config for this session."}
             },"required":["project_dir"]})),
         make_tool("mempalace_mine_status", "Show mining progress for active or completed jobs. Pass job_id for a specific job, or omit to see all.",
             json!({"type":"object","properties":{"job_id":{"type":"string"}},"required":[]})),

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -29,15 +30,20 @@ pub enum MineJobStatus {
 
 pub struct JobManager {
     jobs: Arc<Mutex<HashMap<String, MineJob>>>,
-    max_concurrent: usize,
+    max_concurrent: AtomicUsize,
 }
 
 impl JobManager {
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
-            max_concurrent,
+            max_concurrent: AtomicUsize::new(max_concurrent),
         }
+    }
+
+    pub fn set_max_concurrent(&self, n: usize) {
+        let clamped = n.clamp(1, 64);
+        self.max_concurrent.store(clamped, Ordering::Relaxed);
     }
 
     pub async fn submit_job(&self, dir: String, wing: String, force: bool) -> String {
@@ -134,7 +140,7 @@ impl JobManager {
     }
 
     pub async fn can_start(&self) -> bool {
-        self.running_count().await < self.max_concurrent
+        self.running_count().await < self.max_concurrent.load(Ordering::Relaxed)
     }
 
     pub async fn next_queued(&self) -> Option<MineJob> {
@@ -145,7 +151,7 @@ impl JobManager {
     }
 
     pub fn max_concurrent(&self) -> usize {
-        self.max_concurrent
+        self.max_concurrent.load(Ordering::Relaxed)
     }
 
     pub async fn is_cancelled(&self, job_id: &str) -> bool {

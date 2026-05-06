@@ -15,7 +15,6 @@ use walkdir::WalkDir;
 
 const CHUNK_SIZE: usize = 800;
 const CHUNK_OVERLAP: usize = 100;
-const EMBED_BATCH_SIZE: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MineStats {
@@ -92,21 +91,72 @@ pub fn mine_project_with_store(
         })
         .collect();
 
-    let files_processed = AtomicUsize::new(0);
-    let files_skipped = AtomicUsize::new(0);
-    let chunks_created = AtomicUsize::new(0);
+    let files_processed = Arc::new(AtomicUsize::new(0));
+    let files_skipped = Arc::new(AtomicUsize::new(0));
+    let chunks_created = Arc::new(AtomicUsize::new(0));
     let errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     struct FileChunks {
         chunks: Vec<String>,
+        embeddings: Option<Vec<Vec<f32>>>,
         room: String,
         source_file: String,
         mtime: Option<f64>,
     }
 
-    let file_results: Vec<Option<FileChunks>> = files
-        .par_iter()
-        .map(|entry| {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<FileChunks>(64);
+
+    std::thread::scope(|s| {
+        let w_chunks_created = Arc::clone(&chunks_created);
+        let w_errors = Arc::clone(&errors);
+        let w_files_processed = Arc::clone(&files_processed);
+        let w_files_skipped = Arc::clone(&files_skipped);
+
+        let writer_handle = s.spawn(move || {
+            let mut w_prog = MineProgress::new(&dir_str, wing, files_total);
+            while let Ok(file_result) = rx.recv() {
+                let chunks_with_emb: Vec<(&str, Option<&[f32]>)> = file_result
+                    .chunks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, chunk)| {
+                        let emb = file_result.embeddings.as_ref()
+                            .and_then(|e| e.get(i).map(|v| v.as_slice()));
+                        (chunk.as_str(), emb)
+                    })
+                    .collect();
+
+                match store.replace_file_drawers(
+                    wing,
+                    &file_result.room,
+                    &file_result.source_file,
+                    &chunks_with_emb,
+                    file_result.mtime,
+                ) {
+                    Ok(count) => {
+                        w_chunks_created.fetch_add(count, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        if let Ok(mut errs) = w_errors.lock() {
+                            errs.push(e.to_string());
+                        }
+                    }
+                }
+
+                w_prog.files_done = w_files_processed.load(Ordering::Relaxed);
+                w_prog.files_skipped = w_files_skipped.load(Ordering::Relaxed);
+                w_prog.chunks_created = w_chunks_created.load(Ordering::Relaxed);
+                w_prog.current_file = file_result.source_file
+                    .strip_prefix(&dir_str)
+                    .unwrap_or(&file_result.source_file)
+                    .trim_start_matches(['/', '\\'])
+                    .to_string();
+                write_progress(&w_prog);
+            }
+        });
+
+        let project_dir_owned = project_dir.to_path_buf();
+        files.par_iter().for_each(|entry| {
             let path = entry.path();
             let source_file = path.to_string_lossy().to_string();
 
@@ -118,7 +168,7 @@ pub fn mine_project_with_store(
             if !force {
                 if let Ok(true) = store.file_already_mined(&source_file, mtime) {
                     files_skipped.fetch_add(1, Ordering::Relaxed);
-                    return None;
+                    return;
                 }
             }
 
@@ -126,11 +176,11 @@ pub fn mine_project_with_store(
                 Ok(c) if !c.is_empty() => c,
                 _ => {
                     files_skipped.fetch_add(1, Ordering::Relaxed);
-                    return None;
+                    return;
                 }
             };
 
-            let rel = path.strip_prefix(project_dir).unwrap_or(path)
+            let rel = path.strip_prefix(&project_dir_owned).unwrap_or(path)
                 .to_string_lossy()
                 .replace(['/', '\\', '.'], "-");
             let room = rel.trim_matches('-').to_string();
@@ -139,56 +189,23 @@ pub fn mine_project_with_store(
             let chunks = chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
             files_processed.fetch_add(1, Ordering::Relaxed);
 
-            Some(FileChunks {
+            let embeddings = embedder.and_then(|e| {
+                let texts: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+                e.embed(&texts).ok()
+            });
+
+            let _ = tx.send(FileChunks {
                 chunks,
+                embeddings,
                 room,
                 source_file,
                 mtime,
-            })
-        })
-        .collect();
+            });
+        });
 
-    for file_result in file_results.into_iter().flatten() {
-        let _ = store.delete_file_drawers(&file_result.source_file);
-
-        for batch in file_result.chunks.chunks(EMBED_BATCH_SIZE) {
-            let texts: Vec<&str> = batch.iter().map(|s| s.as_str()).collect();
-            let embeddings = embedder.and_then(|e| e.embed(&texts).ok());
-
-            for (i, chunk) in batch.iter().enumerate() {
-                let emb = embeddings.as_ref().and_then(|e| e.get(i).map(|v| v.as_slice()));
-                match store.upsert_drawer(
-                    wing,
-                    &file_result.room,
-                    chunk,
-                    "code",
-                    Some(&file_result.source_file),
-                    file_result.mtime,
-                    Some(i as i64),
-                    emb,
-                ) {
-                    Ok(_) => {
-                        chunks_created.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        if let Ok(mut errs) = errors.lock() {
-                            errs.push(e.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        prog.files_done = files_processed.load(Ordering::Relaxed);
-        prog.files_skipped = files_skipped.load(Ordering::Relaxed);
-        prog.chunks_created = chunks_created.load(Ordering::Relaxed);
-        prog.current_file = file_result.source_file
-            .strip_prefix(&dir_str)
-            .unwrap_or(&file_result.source_file)
-            .trim_start_matches(['/', '\\'])
-            .to_string();
-        write_progress(&prog);
-    }
+        drop(tx);
+        writer_handle.join().unwrap();
+    });
 
     let final_errors = Arc::try_unwrap(errors)
         .unwrap_or_else(|arc| arc.lock().unwrap().clone().into())

@@ -64,6 +64,7 @@ Use `/mempalace` in any Copilot CLI prompt to invoke this skill explicitly:
   - `project_dir` (required): path to scan
   - `wing`: wing to store in (default `wing_code`)
   - `force`: re-mine files even if unchanged (default false)
+  - `concurrency`: max concurrent mining jobs, 1-64 (default from config, initially 8). Overrides for this session.
 - `mempalace_mine_status` — Show current mining progress: status bar, elapsed, ETA, current file.
   - `job_id` (optional): check a specific job. Omit to see all active jobs.
   Returns a `display` field with the full rendered output, plus raw counters.

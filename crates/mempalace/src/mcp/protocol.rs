@@ -15,8 +15,9 @@ pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), anyho
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.palace_path.clone());
 
+    let max_jobs = config.max_concurrent_jobs.min(64).max(1);
     let store = Arc::new(PalaceStore::open(&palace_path)?);
-    let job_manager = Arc::new(JobManager::new(8));
+    let job_manager = Arc::new(JobManager::new(max_jobs));
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -130,6 +131,10 @@ async fn handle_tool_call(
                 .unwrap_or("wing_code")
                 .to_string();
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            if let Some(c) = args.get("concurrency").and_then(|v| v.as_u64()) {
+                job_manager.set_max_concurrent(c as usize);
+            }
 
             let job_id = job_manager.submit_job(dir.clone(), wing.clone(), force).await;
 

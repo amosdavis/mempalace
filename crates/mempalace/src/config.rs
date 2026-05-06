@@ -14,14 +14,16 @@ pub struct MempalaceConfig {
     pub hook_silent_save: bool,
     pub hook_desktop_toast: bool,
     pub topic_tunnel_min_count: u32,
-    // Auto-mining: true by default; set false to opt out
     #[serde(default = "default_true")]
     pub auto_mine_copilot_sessions: bool,
     #[serde(default = "default_true")]
     pub auto_mine_on_git_commit: bool,
+    #[serde(default = "default_max_concurrent_jobs")]
+    pub max_concurrent_jobs: usize,
 }
 
 fn default_true() -> bool { true }
+fn default_max_concurrent_jobs() -> usize { 8 }
 
 impl Default for MempalaceConfig {
     fn default() -> Self {
@@ -43,6 +45,7 @@ impl Default for MempalaceConfig {
             topic_tunnel_min_count: 3,
             auto_mine_copilot_sessions: true,
             auto_mine_on_git_commit: true,
+            max_concurrent_jobs: 8,
         }
     }
 }
