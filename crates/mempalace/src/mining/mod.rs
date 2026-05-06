@@ -6,9 +6,12 @@ use crate::error::MpError;
 use crate::storage::{PalaceStore, Embedder};
 use gitignore::GitignoreFilter;
 use progress::{MineProgress, MineStatus, write_progress};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use walkdir::WalkDir;
 
 const CHUNK_SIZE: usize = 800;
 const CHUNK_OVERLAP: usize = 100;
@@ -51,22 +54,12 @@ pub fn mine_project(
     let store = PalaceStore::open(palace_path)?;
     let gitignore = GitignoreFilter::new(project_dir);
 
-    // --- Pre-scan: count mineable files so the progress bar has a denominator ---
     let files_total = count_mineable_files(project_dir, &gitignore);
     let dir_str = project_dir.to_string_lossy().to_string();
     let mut prog = MineProgress::new(&dir_str, wing, files_total);
     write_progress(&prog);
 
-    let mut stats = MineStats {
-        files_processed: 0,
-        files_skipped: 0,
-        chunks_created: 0,
-        errors: Vec::new(),
-    };
-
-    let mut pending: Vec<(String, String, String, Option<f64>, i64)> = Vec::new();
-
-    for entry in WalkDir::new(project_dir)
+    let files: Vec<_> = WalkDir::new(project_dir)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -76,76 +69,129 @@ pub fn mine_project(
             }
             true
         })
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => { stats.errors.push(e.to_string()); continue; }
-        };
-        if !entry.file_type().is_file() { continue; }
-        let path = entry.path();
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            let path = e.path();
+            if let Some(ext) = path.extension() {
+                if BINARY_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_ref()) {
+                    return false;
+                }
+            }
+            !gitignore.is_ignored(path)
+        })
+        .collect();
 
-        if let Some(ext) = path.extension() {
-            if BINARY_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_ref()) {
-                stats.files_skipped += 1;
-                continue;
+    let files_processed = AtomicUsize::new(0);
+    let files_skipped = AtomicUsize::new(0);
+    let chunks_created = AtomicUsize::new(0);
+    let errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    struct FileChunks {
+        chunks: Vec<String>,
+        room: String,
+        source_file: String,
+        mtime: Option<f64>,
+    }
+
+    let file_results: Vec<Option<FileChunks>> = files
+        .par_iter()
+        .map(|entry| {
+            let path = entry.path();
+            let source_file = path.to_string_lossy().to_string();
+
+            let mtime = std::fs::metadata(path).ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64());
+
+            if !force {
+                if let Ok(true) = store.file_already_mined(&source_file, mtime) {
+                    files_skipped.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            }
+
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) if !c.is_empty() => c,
+                _ => {
+                    files_skipped.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            };
+
+            let rel = path.strip_prefix(project_dir).unwrap_or(path)
+                .to_string_lossy()
+                .replace(['/', '\\', '.'], "-");
+            let room = rel.trim_matches('-').to_string();
+            let room = if room.is_empty() { "root".to_string() } else { room };
+
+            let chunks = chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
+            files_processed.fetch_add(1, Ordering::Relaxed);
+
+            Some(FileChunks {
+                chunks,
+                room,
+                source_file,
+                mtime,
+            })
+        })
+        .collect();
+
+    for file_result in file_results.into_iter().flatten() {
+        let _ = store.delete_file_drawers(&file_result.source_file);
+
+        for batch in file_result.chunks.chunks(EMBED_BATCH_SIZE) {
+            let texts: Vec<&str> = batch.iter().map(|s| s.as_str()).collect();
+            let embeddings = embedder.and_then(|e| e.embed(&texts).ok());
+
+            for (i, chunk) in batch.iter().enumerate() {
+                let emb = embeddings.as_ref().and_then(|e| e.get(i).map(|v| v.as_slice()));
+                match store.upsert_drawer(
+                    wing,
+                    &file_result.room,
+                    chunk,
+                    "code",
+                    Some(&file_result.source_file),
+                    file_result.mtime,
+                    Some(i as i64),
+                    emb,
+                ) {
+                    Ok(_) => {
+                        chunks_created.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        if let Ok(mut errs) = errors.lock() {
+                            errs.push(e.to_string());
+                        }
+                    }
+                }
             }
         }
-        if gitignore.is_ignored(path) { stats.files_skipped += 1; continue; }
 
-        let mtime = std::fs::metadata(path).ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs_f64());
-
-        let source_file = path.to_string_lossy().to_string();
-
-        if !force && store.file_already_mined(&source_file, mtime)? {
-            stats.files_skipped += 1;
-            continue;
-        }
-
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) if !c.is_empty() => c,
-            _ => { stats.files_skipped += 1; continue; }
-        };
-
-        let rel = path.strip_prefix(project_dir).unwrap_or(path)
-            .to_string_lossy()
-            .replace(['/', '\\', '.'], "-");
-        let room = rel.trim_matches('-').to_string();
-        let room = if room.is_empty() { "root".to_string() } else { room };
-
-        store.delete_file_drawers(&source_file)?;
-
-        for (i, chunk) in chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP).into_iter().enumerate() {
-            pending.push((chunk, room.clone(), source_file.clone(), mtime, i as i64));
-        }
-        stats.files_processed += 1;
-
-        // Update progress after each file processed
-        prog.files_done = stats.files_processed;
-        prog.files_skipped = stats.files_skipped;
-        prog.current_file = path.strip_prefix(project_dir).unwrap_or(path)
-            .to_string_lossy()
+        prog.files_done = files_processed.load(Ordering::Relaxed);
+        prog.files_skipped = files_skipped.load(Ordering::Relaxed);
+        prog.chunks_created = chunks_created.load(Ordering::Relaxed);
+        prog.current_file = file_result.source_file
+            .strip_prefix(&dir_str)
+            .unwrap_or(&file_result.source_file)
+            .trim_start_matches(['/', '\\'])
             .to_string();
         write_progress(&prog);
     }
 
-    for batch in pending.chunks(EMBED_BATCH_SIZE) {
-        let texts: Vec<&str> = batch.iter().map(|(c, _, _, _, _)| c.as_str()).collect();
-        let embeddings = embedder.and_then(|e| e.embed(&texts).ok());
+    let final_errors = Arc::try_unwrap(errors)
+        .unwrap_or_else(|arc| arc.lock().unwrap().clone().into())
+        .into_inner()
+        .unwrap_or_default();
 
-        for (i, (content, room, source_file, mtime, chunk_idx)) in batch.iter().enumerate() {
-            let emb = embeddings.as_ref().and_then(|e| e.get(i).map(|v| v.as_slice()));
-            store.upsert_drawer(wing, room, content, "code",
-                Some(source_file.as_str()), *mtime, Some(*chunk_idx), emb)?;
-            stats.chunks_created += 1;
-        }
-        prog.chunks_created = stats.chunks_created;
-        write_progress(&prog);
-    }
+    let stats = MineStats {
+        files_processed: files_processed.load(Ordering::Relaxed),
+        files_skipped: files_skipped.load(Ordering::Relaxed),
+        chunks_created: chunks_created.load(Ordering::Relaxed),
+        errors: final_errors,
+    };
 
-    // Write final "done" state
     prog.status = MineStatus::Done;
     prog.files_done = stats.files_processed;
     prog.files_skipped = stats.files_skipped;
@@ -188,7 +234,6 @@ fn count_mineable_files(project_dir: &Path, gitignore: &GitignoreFilter) -> usiz
         .count()
 }
 
-/// Public wrapper for the chunk function (used by sessions miner)
 pub fn chunk_text_pub(text: &str, size: usize, overlap: usize) -> Vec<String> {
     chunk_text(text, size, overlap)
 }
