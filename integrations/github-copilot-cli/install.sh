@@ -27,10 +27,25 @@ echo "MemPalace → GitHub Copilot CLI installer"
 echo
 
 # ---------------------------------------------------------------------------
-# Preflight
+# Preflight — locate or download the binary
 # ---------------------------------------------------------------------------
 if ! command -v "$MEMPALACE_BIN" &>/dev/null; then
-    fail "mempalace binary not found. Set MEMPALACE_BIN or add it to PATH."
+    warn "mempalace not found — attempting to download pre-built release"
+    if command -v curl &>/dev/null || command -v wget &>/dev/null; then
+        GET_SCRIPT="$(mktemp)"
+        if command -v curl &>/dev/null; then
+            curl -fsSL "https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh" -o "$GET_SCRIPT"
+        else
+            wget -qO "$GET_SCRIPT" "https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh"
+        fi
+        bash "$GET_SCRIPT"
+        rm -f "$GET_SCRIPT"
+        for candidate in "$HOME/.local/bin/mempalace" "$HOME/.cargo/bin/mempalace" /usr/local/bin/mempalace; do
+            [ -x "$candidate" ] && MEMPALACE_BIN="$candidate" && break
+        done
+    fi
+    command -v "$MEMPALACE_BIN" &>/dev/null || \
+        fail "mempalace not found. Download: curl -fsSL https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh | bash"
 fi
 ACTUAL_BIN="$(command -v "$MEMPALACE_BIN")"
 ok "Found mempalace: $ACTUAL_BIN"

@@ -15,9 +15,15 @@ metadata:
       anyBins:
         - mempalace
     install:
+      - id: mempalace-release
+        kind: github_release
+        repo: amosdavis/mempalace
+        asset: "mempalace-{triple}.{ext}"
+        bins:
+          - mempalace
       - id: mempalace-cargo
         kind: cargo
-        label: "Build MemPalace (Rust, SQLite backend)"
+        label: "Build from source (Rust required, fallback)"
         crate: mp
         bins:
           - mempalace

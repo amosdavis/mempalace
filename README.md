@@ -10,12 +10,41 @@ Local AI memory system. Stores your conversations verbatim, searches them semant
 - **MCP server** — 30 tools for Claude Code, Copilot, Cursor, and any MCP host
 - **Auto-hooks** — auto-mines transcripts in the background; zero chat interruption
 
+## Install
+
+### Pre-built binary (recommended, no Rust required)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh | bash
+```
+
+Binaries are published for **Linux** (x86\_64, aarch64 — static musl), **macOS** (x86\_64, Apple Silicon), and **Windows** (x86\_64) on every tagged release.
+
+Each binary is signed with [cosign](https://docs.sigstore.dev/) keyless signing via Sigstore. Verify manually:
+
+```bash
+cosign verify-blob \
+  --bundle mempalace-<triple>.tar.gz.bundle \
+  --certificate-identity-regexp "https://github.com/amosdavis/mempalace/.github/workflows/release.yml@refs/tags/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  mempalace-<triple>.tar.gz
+```
+
+### From the Copilot CLI skill marketplace
+
+```bash
+gh skill install amosdavis/mempalace mempalace
+```
+
+### Build from source (requires Rust)
+
+```bash
+cargo install --path crates/mp
+```
+
 ## Quick Start
 
 ```bash
-# Build
-cargo install --path crates/mp
-
 # Initialize
 mempalace init
 
@@ -35,7 +64,7 @@ mempalace mcp
 ./install.sh
 ```
 
-Auto-detects installed AI tools and configures MemPalace for each. Supports:
+Auto-detects installed AI tools, downloads the binary if needed, and configures MemPalace for each. Supports:
 - **Claude Code** — MCP + Stop/PreCompact hooks + CLAUDE.md protocol
 - **GitHub Copilot CLI** — `/mempalace` skill + MCP config (invoke with `/mempalace ...` in any prompt)
 - **VS Code Copilot** — MCP server in settings.json + copilot-instructions.md

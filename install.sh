@@ -66,12 +66,36 @@ if ! command -v "$MEMPALACE_BIN" &>/dev/null; then
 fi
 
 if ! command -v "$MEMPALACE_BIN" &>/dev/null && [ ! -x "$MEMPALACE_BIN" ]; then
-    echo -e "  ${RED}✗${NC} mempalace binary not found."
-    echo
-    echo "  Build it first:"
-    echo "    cargo install --path crates/mp"
-    echo "  Or set MEMPALACE_BIN to the absolute path."
-    exit 1
+    warn "mempalace binary not found — attempting to download pre-built release"
+    if command -v curl &>/dev/null || command -v wget &>/dev/null; then
+        GET_SCRIPT="$(mktemp)"
+        if command -v curl &>/dev/null; then
+            curl -fsSL "https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh" -o "$GET_SCRIPT"
+        else
+            wget -qO "$GET_SCRIPT" "https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh"
+        fi
+        bash "$GET_SCRIPT"
+        rm -f "$GET_SCRIPT"
+
+        for candidate in "$HOME/.local/bin/mempalace" "$HOME/.cargo/bin/mempalace" /usr/local/bin/mempalace; do
+            if [ -x "$candidate" ]; then
+                MEMPALACE_BIN="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if ! command -v "$MEMPALACE_BIN" &>/dev/null && [ ! -x "$MEMPALACE_BIN" ]; then
+        echo -e "  ${RED}✗${NC} Could not find or install mempalace."
+        echo
+        echo "  Options:"
+        echo "    1. Download pre-built binary:"
+        echo "       curl -fsSL https://raw.githubusercontent.com/amosdavis/mempalace/main/get.sh | bash"
+        echo "    2. Build from source (requires Rust):"
+        echo "       cargo install --path crates/mp"
+        echo "    3. Set MEMPALACE_BIN to an existing binary path."
+        exit 1
+    fi
 fi
 
 ACTUAL_BIN="$(command -v "$MEMPALACE_BIN" 2>/dev/null || echo "$MEMPALACE_BIN")"
