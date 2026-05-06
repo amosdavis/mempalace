@@ -1290,6 +1290,7 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

@@ -2,7 +2,8 @@ use anyhow::Result;
 use mempalace::MempalaceConfig;
 
 pub fn run_server(palace_path: Option<&str>) -> Result<()> {
-    mempalace::mcp::run_mcp_server(palace_path)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(mempalace::mcp::run_mcp_server_async(palace_path))?;
     Ok(())
 }
 
