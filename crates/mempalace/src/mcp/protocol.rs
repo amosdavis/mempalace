@@ -206,39 +206,37 @@ async fn handle_tool_call(
                 let file_progress = crate::mining::progress::read_progress();
 
                 if !file_jobs.is_empty() {
-                    let summary: Vec<_> = file_jobs.iter().map(|p| json!({
-                        "dir": p.dir,
-                        "wing": p.wing,
-                        "files_done": p.files_done,
-                        "files_total": p.files_total,
-                        "status": format!("{:?}", p.status).to_lowercase()
-                    })).collect();
+                    let running_count = file_jobs.iter()
+                        .filter(|p| matches!(p.status, MineStatus::Running))
+                        .count();
+                    let total_files: usize = file_jobs.iter().map(|p| p.files_total).sum();
+                    let done_files: usize = file_jobs.iter().map(|p| p.files_done).sum();
                     json!({
                         "status": "running",
                         "source": "filesystem",
                         "active_jobs": file_jobs.len(),
-                        "jobs": summary
+                        "running": running_count,
+                        "total_files": total_files,
+                        "files_done": done_files,
+                        "message": format!("{} jobs active, {}/{} files processed. Use job_id param for details.", file_jobs.len(), done_files, total_files)
                     })
                 } else if let Some(p) = file_progress {
                     if matches!(p.status, MineStatus::Running) {
                         json!({
                             "status": "running",
                             "source": "progress_file",
-                            "display": p.format_display(),
                             "dir": p.dir,
                             "wing": p.wing,
                             "files_done": p.files_done,
                             "files_total": p.files_total,
                             "chunks_created": p.chunks_created,
                             "elapsed_secs": p.elapsed_secs(),
-                            "eta_secs": p.eta_secs(),
-                            "current_file": p.current_file
+                            "eta_secs": p.eta_secs()
                         })
                     } else {
                         json!({
                             "status": "idle",
-                            "message": "No mining in progress.",
-                            "last_run": p.format_display()
+                            "message": "No mining in progress."
                         })
                     }
                 } else {
@@ -249,16 +247,37 @@ async fn handle_tool_call(
                     })
                 }
             } else {
-                let summary: Vec<_> = active.iter().map(|j| json!({
+                let running: Vec<_> = active.iter()
+                    .filter(|j| j.status == MineJobStatus::Running)
+                    .collect();
+                let queued: Vec<_> = active.iter()
+                    .filter(|j| j.status == MineJobStatus::Queued)
+                    .collect();
+                let done_count = jobs.iter()
+                    .filter(|j| j.status == MineJobStatus::Done)
+                    .count();
+
+                let short_dir = |d: &str| -> String {
+                    std::path::Path::new(d)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| d.to_string())
+                };
+
+                let sample: Vec<_> = running.iter().take(5).map(|j| json!({
                     "job_id": j.job_id,
-                    "dir": j.dir,
-                    "wing": j.wing,
-                    "status": j.status
+                    "dir": short_dir(&j.dir),
+                    "status": "running"
                 })).collect();
+
                 json!({
                     "status": "running",
-                    "active_jobs": active.len(),
-                    "jobs": summary
+                    "running": running.len(),
+                    "queued": queued.len(),
+                    "done": done_count,
+                    "total_jobs": jobs.len(),
+                    "sample_running": sample,
+                    "message": format!("{} running, {} queued, {} done. Pass job_id for details.", running.len(), queued.len(), done_count)
                 })
             };
 
