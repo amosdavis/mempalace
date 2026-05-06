@@ -133,15 +133,29 @@ async fn handle_tool_call(
 
             let job_id = job_manager.submit_job(dir.clone(), wing.clone()).await;
 
+            if !job_manager.can_start().await {
+                return json!({
+                    "jsonrpc": "2.0", "id": id.clone(),
+                    "result": {
+                        "content": [{"type": "text", "text": json!({
+                            "status": "queued",
+                            "job_id": &job_id,
+                            "message": "Job queued — max concurrent jobs reached. Call mempalace_mine_status for updates."
+                        }).to_string()}]
+                    }
+                });
+            }
+
             let jm = Arc::clone(job_manager);
             let pp = palace_path.to_string();
             let ed = config.embedding_device.clone();
+            let jid = job_id.clone();
 
             tokio::task::spawn_blocking(move || {
                 let rt = tokio::runtime::Handle::current();
                 let embedder = Embedder::new(&ed);
-                let prog = MineProgress::new(&dir, &wing, 0);
-                rt.block_on(jm.mark_running(&job_id, prog));
+                let prog = MineProgress::new(&dir, &wing, 0).with_job_id(&jid);
+                rt.block_on(jm.mark_running(&jid, prog));
 
                 match mine_project(
                     std::path::Path::new(&dir),
@@ -151,14 +165,15 @@ async fn handle_tool_call(
                     force,
                 ) {
                     Ok(stats) => {
-                        let mut final_prog = MineProgress::new(&dir, &wing, stats.files_processed);
+                        let mut final_prog = MineProgress::new(&dir, &wing, stats.files_processed)
+                            .with_job_id(&jid);
                         final_prog.status = MineStatus::Done;
                         final_prog.files_done = stats.files_processed;
                         final_prog.chunks_created = stats.chunks_created;
-                        rt.block_on(jm.mark_done(&job_id, final_prog));
+                        rt.block_on(jm.mark_done(&jid, final_prog));
                     }
                     Err(e) => {
-                        rt.block_on(jm.mark_failed(&job_id, e.to_string()));
+                        rt.block_on(jm.mark_failed(&jid, e.to_string()));
                     }
                 }
             });
@@ -168,14 +183,35 @@ async fn handle_tool_call(
                 "result": {
                     "content": [{"type": "text", "text": json!({
                         "status": "started",
-                        "job_id": job_manager.list_active().await.last()
-                            .map(|j| j.job_id.clone()).unwrap_or_default(),
+                        "job_id": &job_id,
                         "message": "Mining started in background. Call mempalace_mine_status for progress."
                     }).to_string()}]
                 }
             })
         }
         "mempalace_mine_status" => {
+            let specific_id = args.get("job_id").and_then(|v| v.as_str());
+
+            if let Some(jid) = specific_id {
+                let job = job_manager.get_job(jid).await;
+                let file_progress = crate::mining::progress::read_progress_for_job(jid);
+                let result = match job {
+                    Some(mut j) => {
+                        if file_progress.is_some() {
+                            j.progress = file_progress;
+                        }
+                        serde_json::to_value(&j).unwrap_or(json!({"error": "serialize failed"}))
+                    }
+                    None => json!({"error": "job not found", "job_id": jid}),
+                };
+                return json!({
+                    "jsonrpc": "2.0", "id": id.clone(),
+                    "result": {
+                        "content": [{"type": "text", "text": result.to_string()}]
+                    }
+                });
+            }
+
             let jobs = job_manager.list_all().await;
             let active: Vec<_> = jobs
                 .iter()

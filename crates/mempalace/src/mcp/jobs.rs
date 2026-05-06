@@ -134,4 +134,15 @@ impl JobManager {
     pub async fn can_start(&self) -> bool {
         self.running_count().await < self.max_concurrent
     }
+
+    pub async fn next_queued(&self) -> Option<MineJob> {
+        let jobs = self.jobs.lock().await;
+        jobs.values()
+            .find(|j| j.status == MineJobStatus::Queued)
+            .cloned()
+    }
+
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
 }
