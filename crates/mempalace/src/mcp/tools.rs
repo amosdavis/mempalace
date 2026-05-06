@@ -176,18 +176,14 @@ pub fn tool_names() -> Vec<&'static str> {
     ]
 }
 
-pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, anyhow::Error> {
+pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, palace_path: &str) -> Result<Value, anyhow::Error> {
     let config = MempalaceConfig::load();
-    let palace_path = args.get("palace_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or(palace_path);
 
     match name {
         "mempalace_status" => {
-            let store = PalaceStore::open(palace_path)?;
             let stats = store.get_stats()?;
             Ok(json!({
-                "palace_path": palace_path,
+                "palace_path": "redb",
                 "stats": stats,
                 "protocol": crate::PALACE_PROTOCOL,
             }))
@@ -200,9 +196,8 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
             let n = args.get("n_results").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
             let max_dist = args.get("max_distance").and_then(|v| v.as_f64()).unwrap_or(1.5) as f32;
             let vec_off = args.get("vector_disabled").and_then(|v| v.as_bool()).unwrap_or(false);
-            let store = PalaceStore::open(palace_path)?;
             let embedder = Embedder::new(&config.embedding_device);
-            let result = search_memories(query, &store, Some(&embedder), wing, room, n, max_dist, vec_off)?;
+            let result = search_memories(query, store, Some(&embedder), wing, room, n, max_dist, vec_off)?;
             Ok(serde_json::to_value(&result)?)
         }
 
@@ -211,7 +206,6 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
             let wing = args["wing"].as_str().unwrap_or("wing_user");
             let room = args["room"].as_str().unwrap_or("general");
             let type_ = args.get("type").and_then(|v| v.as_str()).unwrap_or("text");
-            let store = PalaceStore::open(palace_path)?;
             let embedder = Embedder::new(&config.embedding_device);
             let embs = embedder.embed(&[content]).ok();
             let emb = embs.as_ref().and_then(|e| e.first().map(|v| v.as_slice()));
@@ -223,7 +217,6 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
             let content = args["content"].as_str().unwrap_or("");
             let wing = args.get("wing").and_then(|v| v.as_str()).unwrap_or("wing_agent");
             let room = chrono::Utc::now().format("diary-%Y-%m-%d").to_string();
-            let store = PalaceStore::open(palace_path)?;
             let embedder = Embedder::new(&config.embedding_device);
             let embs = embedder.embed(&[content]).ok();
             let emb = embs.as_ref().and_then(|e| e.first().map(|v| v.as_slice()));
@@ -234,7 +227,6 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
         "mempalace_diary_read" => {
             let wing = args.get("wing").and_then(|v| v.as_str()).unwrap_or("wing_agent");
             let n = args.get("n").and_then(|v| v.as_i64()).unwrap_or(10);
-            let store = PalaceStore::open(palace_path)?;
             let drawers = store.list_drawers(Some(wing), None, Some(n))?;
             let entries: Vec<Value> = drawers.into_iter().map(|m| {
                 let content = store.get_drawer(&m.drawer_id).map(|d| d.content).unwrap_or_default();
@@ -244,13 +236,11 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
         }
 
         "mempalace_wing_list" => {
-            let store = PalaceStore::open(palace_path)?;
             Ok(json!({"wings": store.list_wings()?}))
         }
 
         "mempalace_room_list" => {
             let wing = args["wing"].as_str().unwrap_or("");
-            let store = PalaceStore::open(palace_path)?;
             Ok(json!({"wing": wing, "rooms": store.list_rooms(wing)?}))
         }
 
@@ -258,21 +248,18 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
             let wing = args.get("wing").and_then(|v| v.as_str());
             let room = args.get("room").and_then(|v| v.as_str());
             let limit = args.get("limit").and_then(|v| v.as_i64()).or(Some(20));
-            let store = PalaceStore::open(palace_path)?;
             let drawers = store.list_drawers(wing, room, limit)?;
             Ok(serde_json::to_value(&drawers)?)
         }
 
         "mempalace_drawer_read" => {
             let id = args["drawer_id"].as_str().unwrap_or("");
-            let store = PalaceStore::open(palace_path)?;
             let drawer = store.get_drawer(id)?;
             Ok(serde_json::to_value(&drawer)?)
         }
 
         "mempalace_drawer_delete" => {
             let id = args["drawer_id"].as_str().unwrap_or("");
-            let store = PalaceStore::open(palace_path)?;
             let deleted = store.delete_drawer(id)?;
             Ok(json!({"deleted": deleted, "drawer_id": id}))
         }
@@ -367,47 +354,40 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
             let tw = args["to_wing"].as_str().unwrap_or("");
             let tr = args["to_room"].as_str().unwrap_or("");
             let note = args.get("note").and_then(|v| v.as_str());
-            let store = PalaceStore::open(palace_path)?;
-            let id = PalaceGraph::create_tunnel(&store, fw, fr, tw, tr, note)?;
+            let id = PalaceGraph::create_tunnel(store, fw, fr, tw, tr, note)?;
             Ok(json!({"tunnel_id": id, "status": "created"}))
         }
 
         "mempalace_tunnel_list" => {
             let wing = args.get("wing").and_then(|v| v.as_str());
-            let store = PalaceStore::open(palace_path)?;
-            Ok(serde_json::to_value(&store.list_tunnels(wing)?)?)
+            Ok(serde_json::to_value(store.list_tunnels(wing)?)?)
         }
 
         "mempalace_tunnel_delete" => {
             let id = args["tunnel_id"].as_str().unwrap_or("");
-            let store = PalaceStore::open(palace_path)?;
-            let ok = PalaceGraph::delete_tunnel(&store, id)?;
+            let ok = PalaceGraph::delete_tunnel(store, id)?;
             Ok(json!({"tunnel_id": id, "deleted": ok}))
         }
 
         "mempalace_tunnel_follow" => {
             let wing = args["wing"].as_str().unwrap_or("");
             let room = args["room"].as_str().unwrap_or("");
-            let store = PalaceStore::open(palace_path)?;
-            Ok(PalaceGraph::follow_tunnels(&store, wing, room)?)
+            Ok(PalaceGraph::follow_tunnels(store, wing, room)?)
         }
 
         "mempalace_graph_traverse" => {
             let wing = args["wing"].as_str().unwrap_or("");
             let room = args["room"].as_str().unwrap_or("");
             let hops = args.get("max_hops").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-            let store = PalaceStore::open(palace_path)?;
-            Ok(PalaceGraph::traverse(&store, wing, room, hops)?)
+            Ok(PalaceGraph::traverse(store, wing, room, hops)?)
         }
 
         "mempalace_graph_stats" => {
-            let store = PalaceStore::open(palace_path)?;
-            Ok(PalaceGraph::graph_stats(&store)?)
+            Ok(PalaceGraph::graph_stats(store)?)
         }
 
         "mempalace_graph_find_tunnels" => {
-            let store = PalaceStore::open(palace_path)?;
-            Ok(PalaceGraph::find_tunnels(&store)?)
+            Ok(PalaceGraph::find_tunnels(store)?)
         }
 
         "mempalace_config_get" => {
@@ -415,13 +395,11 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
         }
 
         "mempalace_palace_stats" => {
-            let store = PalaceStore::open(palace_path)?;
             Ok(store.get_stats()?)
         }
 
         "mempalace_export_wing" => {
             let wing = args["wing"].as_str().unwrap_or("");
-            let store = PalaceStore::open(palace_path)?;
             let metas = store.list_drawers(Some(wing), None, Some(10000))?;
             let mut drawers: Vec<Value> = Vec::new();
             for m in &metas {
@@ -436,7 +414,6 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
         "mempalace_bulk_remember" => {
             let entries = args["entries"].as_array().cloned().unwrap_or_default();
             let wing = args["wing"].as_str().unwrap_or("wing_user");
-            let store = PalaceStore::open(palace_path)?;
             let embedder = Embedder::new(&config.embedding_device);
             let mut saved = 0usize;
             let total = entries.len();
@@ -460,7 +437,6 @@ pub fn call_tool(name: &str, args: &Value, palace_path: &str) -> Result<Value, a
         }
 
         "mempalace_wake_up" => {
-            let store = PalaceStore::open(palace_path)?;
             let stats = store.get_stats()?;
             let kg = KnowledgeGraph::open(&MempalaceConfig::knowledge_graph_path())?;
             let kg_stats = kg.stats()?;

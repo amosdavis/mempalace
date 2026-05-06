@@ -114,7 +114,7 @@ async fn handle_tool_call(
     args: &Value,
     palace_path: &str,
     config: &MempalaceConfig,
-    _store: &Arc<PalaceStore>,
+    store: &Arc<PalaceStore>,
     job_manager: &Arc<JobManager>,
     id: &Value,
 ) -> Value {
@@ -257,7 +257,7 @@ async fn handle_tool_call(
             })
         }
         _ => {
-            match tools::call_tool(name, args, palace_path) {
+            match tools::call_tool(name, args, store, palace_path) {
                 Ok(result) => json!({
                     "jsonrpc": "2.0", "id": id.clone(),
                     "result": {
@@ -266,7 +266,7 @@ async fn handle_tool_call(
                 }),
                 Err(e) => json!({
                     "jsonrpc": "2.0", "id": id.clone(),
-                    "error": {"code": -32603, "message": "Internal error", "data": e.to_string()}
+                    "error": {"code": -32603, "message": format!("{name} failed: {e}"), "data": e.to_string()}
                 }),
             }
         }
@@ -278,6 +278,8 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
     let palace_path = palace_path
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.palace_path.clone());
+
+    let store = PalaceStore::open(&palace_path)?;
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -341,7 +343,7 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
                 let params = request.get("params").cloned().unwrap_or(json!({}));
                 let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match tools::call_tool(name, &args, &palace_path) {
+                match tools::call_tool(name, &args, &store, &palace_path) {
                     Ok(result) => json!({
                         "jsonrpc": "2.0", "id": id,
                         "result": {
@@ -350,7 +352,7 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
                     }),
                     Err(e) => json!({
                         "jsonrpc": "2.0", "id": id,
-                        "error": {"code": -32603, "message": "Internal error", "data": e.to_string()}
+                        "error": {"code": -32603, "message": format!("{name} failed: {e}"), "data": e.to_string()}
                     }),
                 }
             }
