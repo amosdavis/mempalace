@@ -107,7 +107,7 @@ pub fn mine_project_with_store(
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<FileChunks>(64);
 
-    let fts_index: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>> =
+    let fts_index: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Arc<str>>>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
     std::thread::scope(|s| {
@@ -119,6 +119,7 @@ pub fn mine_project_with_store(
 
         let writer_handle = s.spawn(move || {
             let mut w_prog = MineProgress::new(&dir_str, wing, files_total);
+            let mut last_progress_write = std::time::Instant::now();
             while let Ok(file_result) = rx.recv() {
                 let chunks_with_emb: Vec<(&str, Option<&[f32]>)> = file_result
                     .chunks
@@ -142,8 +143,9 @@ pub fn mine_project_with_store(
                         w_chunks_created.fetch_add(count, Ordering::Relaxed);
                         if let Ok(mut idx) = w_fts_index.lock() {
                             for (drawer_id, terms) in fts_entries {
+                                let id: Arc<str> = Arc::from(drawer_id.as_str());
                                 for term in terms {
-                                    idx.entry(term).or_default().push(drawer_id.clone());
+                                    idx.entry(term).or_default().push(Arc::clone(&id));
                                 }
                             }
                         }
@@ -163,7 +165,10 @@ pub fn mine_project_with_store(
                     .unwrap_or(&file_result.source_file)
                     .trim_start_matches(['/', '\\'])
                     .to_string();
-                write_progress(&w_prog);
+                if last_progress_write.elapsed() >= std::time::Duration::from_secs(1) {
+                    write_progress(&w_prog);
+                    last_progress_write = std::time::Instant::now();
+                }
             }
         });
 

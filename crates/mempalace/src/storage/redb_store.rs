@@ -333,7 +333,7 @@ impl RedbPalaceStore {
         for term in &terms {
             let term_lower = term.to_lowercase();
             if let Some(bytes) = fts_table.get(term_lower.as_str()).map_err(map_redb_err)? {
-                let ids: Vec<String> = serde_json::from_slice(bytes.value()).unwrap_or_default();
+                let ids: Vec<String> = fts_decode(bytes.value());
                 for id in ids {
                     *doc_scores.entry(id).or_insert(0.0) += 1.0;
                 }
@@ -554,9 +554,10 @@ impl RedbPalaceStore {
         Ok((chunks.len(), new_entries))
     }
 
-    pub fn flush_fts_index(&self, index: &std::collections::HashMap<String, Vec<String>>) -> Result<usize, MpError> {
+    pub fn flush_fts_index(&self, index: &std::collections::HashMap<String, Vec<Arc<str>>>) -> Result<usize, MpError> {
+        use std::collections::HashSet;
         let total = index.len();
-        let entries: Vec<(&String, &Vec<String>)> = index.iter().collect();
+        let entries: Vec<(&String, &Vec<Arc<str>>)> = index.iter().collect();
         let batch_size = 2000;
         for batch in entries.chunks(batch_size) {
             let write_txn = self.db.begin_write().map_err(map_redb_err)?;
@@ -565,15 +566,14 @@ impl RedbPalaceStore {
                 for (term, new_ids) in batch {
                     let existing: Vec<String> = fts.get(term.as_str())
                         .map_err(map_redb_err)?
-                        .and_then(|v| serde_json::from_slice(v.value()).ok())
+                        .map(|v| fts_decode(v.value()))
                         .unwrap_or_default();
-                    let mut merged = existing;
+                    let mut set: HashSet<String> = existing.into_iter().collect();
                     for id in *new_ids {
-                        if !merged.contains(id) {
-                            merged.push(id.clone());
-                        }
+                        set.insert(id.to_string());
                     }
-                    let bytes = serde_json::to_vec(&merged)?;
+                    let merged: Vec<&String> = set.iter().collect();
+                    let bytes = fts_encode(&merged);
                     fts.insert(term.as_str(), bytes.as_slice()).map_err(map_redb_err)?;
                 }
             }
@@ -723,13 +723,13 @@ impl RedbPalaceStore {
             let mut ids: Vec<String> = {
                 let existing = fts.get(term.as_str()).map_err(map_redb_err)?;
                 match existing {
-                    Some(bytes) => serde_json::from_slice(bytes.value()).unwrap_or_default(),
+                    Some(bytes) => fts_decode(bytes.value()),
                     None => Vec::new(),
                 }
             };
             if !ids.contains(&drawer_id.to_string()) {
                 ids.push(drawer_id.to_string());
-                let bytes = serde_json::to_vec(&ids)?;
+                let bytes = fts_encode(&ids);
                 fts.insert(term.as_str(), bytes.as_slice())
                     .map_err(map_redb_err)?;
             }
@@ -748,14 +748,14 @@ impl RedbPalaceStore {
         for term in terms {
             let ids_opt: Option<Vec<String>> = {
                 let existing = fts.get(term.as_str()).map_err(map_redb_err)?;
-                existing.map(|bytes| serde_json::from_slice(bytes.value()).unwrap_or_default())
+                existing.map(|bytes| fts_decode(bytes.value()))
             };
             if let Some(mut ids) = ids_opt {
                 ids.retain(|id| id != drawer_id);
                 if ids.is_empty() {
                     fts.remove(term.as_str()).map_err(map_redb_err)?;
                 } else {
-                    let bytes = serde_json::to_vec(&ids)?;
+                    let bytes = fts_encode(&ids);
                     fts.insert(term.as_str(), bytes.as_slice())
                         .map_err(map_redb_err)?;
                 }
@@ -765,13 +765,46 @@ impl RedbPalaceStore {
     }
 }
 
+fn fts_encode(ids: &[impl AsRef<str>]) -> Vec<u8> {
+    let joined: String = ids.iter()
+        .map(|s| s.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    joined.into_bytes()
+}
+
+fn fts_decode(bytes: &[u8]) -> Vec<String> {
+    let text = std::str::from_utf8(bytes).unwrap_or("");
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if text.starts_with('[') {
+        serde_json::from_slice(bytes).unwrap_or_default()
+    } else {
+        text.split('\n').map(|s| s.to_string()).collect()
+    }
+}
+
 fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|t| t.len() >= 2)
-        .map(|t| t.to_lowercase())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect()
+    let mut seen = std::collections::HashSet::with_capacity(128);
+    let mut result = Vec::with_capacity(128);
+    for token in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if token.len() < 2 {
+            continue;
+        }
+        let is_lower = token.bytes().all(|b| !b.is_ascii_uppercase());
+        if is_lower {
+            if seen.insert(token.to_string()) {
+                result.push(token.to_string());
+            }
+        } else {
+            let lower = token.to_lowercase();
+            if seen.insert(lower.clone()) {
+                result.push(lower);
+            }
+        }
+    }
+    result
 }
 
 fn map_redb_err(e: impl std::fmt::Display) -> MpError {

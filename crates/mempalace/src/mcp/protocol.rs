@@ -3,6 +3,14 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::config::MempalaceConfig;
+
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("MEMPALACE_DEBUG").is_ok() {
+            eprintln!($($arg)*);
+        }
+    };
+}
 use crate::mcp::jobs::{JobManager, MineJobStatus};
 use crate::mcp::tools;
 use crate::mining::mine_project_with_store;
@@ -24,7 +32,7 @@ pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), anyho
     let mut reader = BufReader::new(stdin);
     let mut out = stdout;
 
-    eprintln!("[MemPalace MCP] Async server started. Palace: {palace_path}");
+    debug_log!("[MemPalace MCP] Async server started. Palace: {palace_path}");
 
     let mut line = String::new();
     loop {
@@ -41,7 +49,7 @@ pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), anyho
         let request: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[MemPalace MCP] Parse error: {e}");
+                debug_log!("[MemPalace MCP] Parse error: {e}");
                 let r = json!({
                     "jsonrpc": "2.0", "id": null,
                     "error": {"code": -32700, "message": "Parse error", "data": e.to_string()}
@@ -59,7 +67,7 @@ pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), anyho
             .get("method")
             .and_then(|m| m.as_str())
             .unwrap_or("");
-        eprintln!("[MemPalace MCP] method={method}");
+        debug_log!("[MemPalace MCP] method={method}");
 
         if method.starts_with("notifications/") {
             continue;
@@ -334,14 +342,14 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    eprintln!("[MemPalace MCP] Server started. Palace: {palace_path}");
+    debug_log!("[MemPalace MCP] Server started. Palace: {palace_path}");
 
     use std::io::{BufRead, Write};
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("[MemPalace MCP] Read error: {e}");
+                debug_log!("[MemPalace MCP] Read error: {e}");
                 break;
             }
         };
@@ -352,7 +360,7 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
         let request: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[MemPalace MCP] Parse error: {e}");
+                debug_log!("[MemPalace MCP] Parse error: {e}");
                 let r = json!({
                     "jsonrpc": "2.0", "id": null,
                     "error": {"code": -32700, "message": "Parse error", "data": e.to_string()}
@@ -368,7 +376,7 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
             .get("method")
             .and_then(|m| m.as_str())
             .unwrap_or("");
-        eprintln!("[MemPalace MCP] method={method}");
+        debug_log!("[MemPalace MCP] method={method}");
 
         if method.starts_with("notifications/") {
             continue;
