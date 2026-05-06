@@ -84,14 +84,16 @@ pub fn list_tools() -> Vec<Value> {
             json!({"type":"object","properties":{"limit":{"type":"integer"}},"required":[]})),
         make_tool("mempalace_kg_stats", "Get KG stats",
             json!({"type":"object","properties":{},"required":[]})),
-        make_tool("mempalace_mine_project", "Mine a project directory (blocking; writes progress to ~/.mempalace/mine_progress.json)",
+        make_tool("mempalace_mine_project", "Mine a project directory (non-blocking; returns job_id immediately, mines in background). Call multiple times for parallel mining.",
             json!({"type":"object","properties":{
                 "project_dir":{"type":"string"},
                 "wing":{"type":"string"},
                 "force":{"type":"boolean"}
             },"required":["project_dir"]})),
-        make_tool("mempalace_mine_status", "Show mining progress (status bar, elapsed, ETA, current file). Call while mining is running or after it finishes.",
-            json!({"type":"object","properties":{},"required":[]})),
+        make_tool("mempalace_mine_status", "Show mining progress for active or completed jobs. Pass job_id for a specific job, or omit to see all.",
+            json!({"type":"object","properties":{"job_id":{"type":"string"}},"required":[]})),
+        make_tool("mempalace_mine_cancel", "Cancel a running or queued mining job.",
+            json!({"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"]})),
         make_tool("mempalace_tunnel_create", "Create a tunnel between rooms",
             json!({"type":"object","properties":{
                 "from_wing":{"type":"string"},
