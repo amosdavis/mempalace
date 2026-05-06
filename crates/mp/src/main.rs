@@ -28,6 +28,12 @@ enum Commands {
         /// Force re-mining
         #[arg(long)]
         force: bool,
+        /// Run mining in the background and return immediately
+        #[arg(long)]
+        background: bool,
+        /// Number of parallel file workers (default: CPU count)
+        #[arg(long, short = 'j')]
+        jobs: Option<usize>,
     },
     /// Mine AI conversation sessions (Copilot, Claude) into the palace
     MineSessions {
@@ -81,6 +87,12 @@ enum Commands {
         #[arg(long, default_value = "wing_code")]
         wing: String,
     },
+    /// Migrate an existing SQLite palace to redb format
+    Migrate {
+        /// Path to the existing SQLite palace.sqlite3 file
+        #[arg(long)]
+        from: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -118,7 +130,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => commands::init::run(palace),
-        Commands::Mine { dir, wing, force } => commands::mine::run(&dir, &wing, force, palace),
+        Commands::Mine { dir, wing, force, background, jobs } => {
+            commands::mine::run(&dir, &wing, force, background, jobs, palace)
+        }
         Commands::MineSessions { copilot, claude } => {
             if copilot {
                 commands::mine_sessions::run_copilot(palace)?;
@@ -156,6 +170,7 @@ fn main() -> Result<()> {
             ConfigCommand::Get { key } => commands::config_cmd::run_get(&key),
         },
         Commands::Watch { dir, wing } => commands::watch::run(&dir, &wing, palace),
+        Commands::Migrate { from } => commands::migrate::run(from.as_deref(), palace),
         Commands::GrantPermissions => commands::grant_permissions::run(),
     }
 }

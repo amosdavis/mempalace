@@ -1288,6 +1288,8 @@ dependencies = [
  "dirs",
  "mempalace",
  "notify",
+ "rayon",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

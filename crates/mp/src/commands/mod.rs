@@ -3,6 +3,7 @@ pub mod grant_permissions;
 pub mod hook;
 pub mod init;
 pub mod mcp;
+pub mod migrate;
 pub mod mine;
 pub mod mine_sessions;
 pub mod progress;
