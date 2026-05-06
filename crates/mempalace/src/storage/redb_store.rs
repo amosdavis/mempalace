@@ -457,7 +457,7 @@ impl RedbPalaceStore {
         source_file: &str,
         chunks: &[(&str, Option<&[f32]>)],
         source_mtime: Option<f64>,
-    ) -> Result<usize, MpError> {
+    ) -> Result<(usize, Vec<(String, Vec<String>)>), MpError> {
         let ids_to_delete = {
             let read_txn = self.db.begin_read().map_err(map_redb_err)?;
             let table = read_txn.open_table(DRAWERS_BY_SOURCE).map_err(map_redb_err)?;
@@ -473,22 +473,10 @@ impl RedbPalaceStore {
             ids
         };
 
-        let old_contents: Vec<(String, String)> = if !ids_to_delete.is_empty() {
-            let read_txn = self.db.begin_read().map_err(map_redb_err)?;
-            let table = read_txn.open_table(DRAWERS).map_err(map_redb_err)?;
-            let mut out = Vec::new();
-            for id in &ids_to_delete {
-                if let Some(bytes) = table.get(id.as_str()).map_err(map_redb_err)? {
-                    let rec: DrawerRecord = serde_json::from_slice(bytes.value())?;
-                    out.push((id.clone(), rec.content));
-                }
-            }
-            out
-        } else {
-            Vec::new()
-        };
+        let old_drawer_ids: Vec<String> = ids_to_delete.clone();
 
         let write_txn = self.db.begin_write().map_err(map_redb_err)?;
+        let mut new_entries: Vec<(String, Vec<String>)> = Vec::new();
         {
             let mut drawers = write_txn.open_table(DRAWERS).map_err(map_redb_err)?;
             let mut by_wing = write_txn.open_table(DRAWERS_BY_WING).map_err(map_redb_err)?;
@@ -496,9 +484,8 @@ impl RedbPalaceStore {
             let mut by_wr = write_txn.open_table(DRAWERS_BY_WING_ROOM).map_err(map_redb_err)?;
             let mut by_source = write_txn.open_table(DRAWERS_BY_SOURCE).map_err(map_redb_err)?;
             let mut embeddings_tbl = write_txn.open_table(EMBEDDINGS).map_err(map_redb_err)?;
-            let mut fts = write_txn.open_table(FTS_TERMS).map_err(map_redb_err)?;
 
-            for (id, content) in &old_contents {
+            for id in &old_drawer_ids {
                 drawers.remove(id.as_str()).map_err(map_redb_err)?;
                 let wing_key = format!("{}:{}", wing, id);
                 by_wing.remove(wing_key.as_str()).map_err(map_redb_err)?;
@@ -509,23 +496,6 @@ impl RedbPalaceStore {
                 let src_key = format!("{}:{}", source_file, id);
                 by_source.remove(src_key.as_str()).map_err(map_redb_err)?;
                 let _ = embeddings_tbl.remove(id.as_str());
-
-                let terms = tokenize(content);
-                for term in terms {
-                    let ids_opt: Option<Vec<String>> = {
-                        let existing = fts.get(term.as_str()).map_err(map_redb_err)?;
-                        existing.map(|b| serde_json::from_slice(b.value()).unwrap_or_default())
-                    };
-                    if let Some(mut ids) = ids_opt {
-                        ids.retain(|x| x != id);
-                        if ids.is_empty() {
-                            fts.remove(term.as_str()).map_err(map_redb_err)?;
-                        } else {
-                            let bytes = serde_json::to_vec(&ids)?;
-                            fts.insert(term.as_str(), bytes.as_slice()).map_err(map_redb_err)?;
-                        }
-                    }
-                }
             }
 
             let created_at = Utc::now().timestamp_millis() as f64 / 1000.0;
@@ -577,24 +547,39 @@ impl RedbPalaceStore {
                 }
 
                 let terms = tokenize(content);
-                for term in terms {
-                    let mut ids: Vec<String> = {
-                        let existing = fts.get(term.as_str()).map_err(map_redb_err)?;
-                        match existing {
-                            Some(bytes) => serde_json::from_slice(bytes.value()).unwrap_or_default(),
-                            None => Vec::new(),
-                        }
-                    };
-                    if !ids.contains(&drawer_id) {
-                        ids.push(drawer_id.clone());
-                        let bytes = serde_json::to_vec(&ids)?;
-                        fts.insert(term.as_str(), bytes.as_slice()).map_err(map_redb_err)?;
-                    }
-                }
+                new_entries.push((drawer_id, terms));
             }
         }
         write_txn.commit().map_err(map_redb_err)?;
-        Ok(chunks.len())
+        Ok((chunks.len(), new_entries))
+    }
+
+    pub fn flush_fts_index(&self, index: &std::collections::HashMap<String, Vec<String>>) -> Result<usize, MpError> {
+        let total = index.len();
+        let entries: Vec<(&String, &Vec<String>)> = index.iter().collect();
+        let batch_size = 2000;
+        for batch in entries.chunks(batch_size) {
+            let write_txn = self.db.begin_write().map_err(map_redb_err)?;
+            {
+                let mut fts = write_txn.open_table(FTS_TERMS).map_err(map_redb_err)?;
+                for (term, new_ids) in batch {
+                    let existing: Vec<String> = fts.get(term.as_str())
+                        .map_err(map_redb_err)?
+                        .and_then(|v| serde_json::from_slice(v.value()).ok())
+                        .unwrap_or_default();
+                    let mut merged = existing;
+                    for id in *new_ids {
+                        if !merged.contains(id) {
+                            merged.push(id.clone());
+                        }
+                    }
+                    let bytes = serde_json::to_vec(&merged)?;
+                    fts.insert(term.as_str(), bytes.as_slice()).map_err(map_redb_err)?;
+                }
+            }
+            write_txn.commit().map_err(map_redb_err)?;
+        }
+        Ok(total)
     }
 
     pub fn get_stats(&self) -> Result<serde_json::Value, MpError> {

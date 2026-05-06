@@ -63,10 +63,7 @@ pub fn mine_project_with_store(
 ) -> Result<MineStats, MpError> {
     let gitignore = GitignoreFilter::new(project_dir);
 
-    let files_total = count_mineable_files(project_dir, &gitignore);
     let dir_str = project_dir.to_string_lossy().to_string();
-    let mut prog = MineProgress::new(&dir_str, wing, files_total);
-    write_progress(&prog);
 
     let files: Vec<_> = WalkDir::new(project_dir)
         .follow_links(false)
@@ -91,6 +88,10 @@ pub fn mine_project_with_store(
         })
         .collect();
 
+    let files_total = files.len();
+    let mut prog = MineProgress::new(&dir_str, wing, files_total);
+    write_progress(&prog);
+
     let files_processed = Arc::new(AtomicUsize::new(0));
     let files_skipped = Arc::new(AtomicUsize::new(0));
     let chunks_created = Arc::new(AtomicUsize::new(0));
@@ -106,11 +107,15 @@ pub fn mine_project_with_store(
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<FileChunks>(64);
 
+    let fts_index: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
     std::thread::scope(|s| {
         let w_chunks_created = Arc::clone(&chunks_created);
         let w_errors = Arc::clone(&errors);
         let w_files_processed = Arc::clone(&files_processed);
         let w_files_skipped = Arc::clone(&files_skipped);
+        let w_fts_index = Arc::clone(&fts_index);
 
         let writer_handle = s.spawn(move || {
             let mut w_prog = MineProgress::new(&dir_str, wing, files_total);
@@ -133,8 +138,15 @@ pub fn mine_project_with_store(
                     &chunks_with_emb,
                     file_result.mtime,
                 ) {
-                    Ok(count) => {
+                    Ok((count, fts_entries)) => {
                         w_chunks_created.fetch_add(count, Ordering::Relaxed);
+                        if let Ok(mut idx) = w_fts_index.lock() {
+                            for (drawer_id, terms) in fts_entries {
+                                for term in terms {
+                                    idx.entry(term).or_default().push(drawer_id.clone());
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         if let Ok(mut errs) = w_errors.lock() {
@@ -212,6 +224,14 @@ pub fn mine_project_with_store(
         .into_inner()
         .unwrap_or_default();
 
+    prog.current_file = "indexing for search...".to_string();
+    write_progress(&prog);
+    let index = match Arc::try_unwrap(fts_index) {
+        Ok(mutex) => mutex.into_inner().unwrap_or_default(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    };
+    let _ = store.flush_fts_index(&index);
+
     let stats = MineStats {
         files_processed: files_processed.load(Ordering::Relaxed),
         files_skipped: files_skipped.load(Ordering::Relaxed),
@@ -234,31 +254,6 @@ pub fn mine_project_with_store(
     write_progress(&prog);
 
     Ok(stats)
-}
-
-fn count_mineable_files(project_dir: &Path, gitignore: &GitignoreFilter) -> usize {
-    WalkDir::new(project_dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            let name = e.file_name().to_string_lossy();
-            if e.file_type().is_dir() {
-                return !SKIP_DIRS.contains(&name.as_ref());
-            }
-            true
-        })
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            let p = e.path();
-            if let Some(ext) = p.extension() {
-                if BINARY_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_ref()) {
-                    return false;
-                }
-            }
-            !gitignore.is_ignored(p)
-        })
-        .count()
 }
 
 pub fn chunk_text_pub(text: &str, size: usize, overlap: usize) -> Vec<String> {
