@@ -201,11 +201,18 @@ async fn handle_tool_call(
                 let file_progress = crate::mining::progress::read_progress();
 
                 if !file_jobs.is_empty() {
+                    let summary: Vec<_> = file_jobs.iter().map(|p| json!({
+                        "dir": p.dir,
+                        "wing": p.wing,
+                        "files_done": p.files_done,
+                        "files_total": p.files_total,
+                        "status": format!("{:?}", p.status).to_lowercase()
+                    })).collect();
                     json!({
                         "status": "running",
                         "source": "filesystem",
                         "active_jobs": file_jobs.len(),
-                        "jobs": file_jobs
+                        "jobs": summary
                     })
                 } else if let Some(p) = file_progress {
                     if matches!(p.status, MineStatus::Running) {
@@ -237,10 +244,16 @@ async fn handle_tool_call(
                     })
                 }
             } else {
+                let summary: Vec<_> = active.iter().map(|j| json!({
+                    "job_id": j.job_id,
+                    "dir": j.dir,
+                    "wing": j.wing,
+                    "status": j.status
+                })).collect();
                 json!({
                     "status": "running",
                     "active_jobs": active.len(),
-                    "jobs": active
+                    "jobs": summary
                 })
             };
 
