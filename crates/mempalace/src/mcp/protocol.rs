@@ -219,11 +219,45 @@ async fn handle_tool_call(
                 .collect();
 
             let result = if active.is_empty() {
-                json!({
-                    "status": "idle",
-                    "message": "No mining in progress.",
-                    "completed_jobs": jobs.len()
-                })
+                let file_jobs = crate::mining::progress::list_active_jobs();
+                let file_progress = crate::mining::progress::read_progress();
+
+                if !file_jobs.is_empty() {
+                    json!({
+                        "status": "running",
+                        "source": "filesystem",
+                        "active_jobs": file_jobs.len(),
+                        "jobs": file_jobs
+                    })
+                } else if let Some(p) = file_progress {
+                    if matches!(p.status, MineStatus::Running) {
+                        json!({
+                            "status": "running",
+                            "source": "progress_file",
+                            "display": p.format_display(),
+                            "dir": p.dir,
+                            "wing": p.wing,
+                            "files_done": p.files_done,
+                            "files_total": p.files_total,
+                            "chunks_created": p.chunks_created,
+                            "elapsed_secs": p.elapsed_secs(),
+                            "eta_secs": p.eta_secs(),
+                            "current_file": p.current_file
+                        })
+                    } else {
+                        json!({
+                            "status": "idle",
+                            "message": "No mining in progress.",
+                            "last_run": p.format_display()
+                        })
+                    }
+                } else {
+                    json!({
+                        "status": "idle",
+                        "message": "No mining in progress.",
+                        "completed_jobs": jobs.len()
+                    })
+                }
             } else {
                 json!({
                     "status": "running",
