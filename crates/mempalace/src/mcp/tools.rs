@@ -1,6 +1,5 @@
 use crate::config::MempalaceConfig;
 use crate::kg::KnowledgeGraph;
-use crate::mining::mine_project;
 use crate::mining::progress::read_progress;
 use crate::palace_graph::PalaceGraph;
 use crate::search::hybrid::search_memories;
@@ -176,7 +175,7 @@ pub fn tool_names() -> Vec<&'static str> {
     ]
 }
 
-pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, palace_path: &str) -> Result<Value, anyhow::Error> {
+pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &str) -> Result<Value, anyhow::Error> {
     let config = MempalaceConfig::load();
 
     match name {
@@ -315,15 +314,10 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, palace_path: &st
         }
 
         "mempalace_mine_project" => {
-            let dir = args["project_dir"].as_str().unwrap_or(".");
-            let wing = args.get("wing").and_then(|v| v.as_str()).unwrap_or("wing_code");
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let embedder = Embedder::new(&config.embedding_device);
-            let stats = mine_project(
-                std::path::Path::new(dir),
-                palace_path, wing, Some(&embedder), force,
-            )?;
-            Ok(serde_json::to_value(&stats)?)
+            Err(anyhow::anyhow!(
+                "mempalace_mine_project requires the async MCP server. \
+                 Ensure mempalace is started via `mempalace mcp` (tokio runtime)."
+            ))
         }
 
         "mempalace_mine_status" => {

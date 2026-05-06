@@ -42,7 +42,7 @@ Use `/mempalace` in any Copilot CLI prompt to invoke this skill explicitly:
 /mempalace search for what we decided about authentication
 /mempalace what do you know about the rust rewrite?
 /mempalace progress                   ← show mining status bar
-/mempalace mine ~/my-project          ← start mining a project
+/mempalace mine ~/my-project          ← start background mining
 /mempalace what happened last session?
 ```
 
@@ -60,13 +60,15 @@ Use `/mempalace` in any Copilot CLI prompt to invoke this skill explicitly:
 ## Available Tools
 
 ### Mining
-- `mempalace_mine_project` — Mine a project directory into the palace (blocking; writes live progress to disk).
+- `mempalace_mine_project` — Mine a project directory into the palace. Runs in background (non-blocking); returns a job_id immediately. Call `mempalace_mine_status` to check progress.
   - `project_dir` (required): path to scan
   - `wing`: wing to store in (default `wing_code`)
   - `force`: re-mine files even if unchanged (default false)
 - `mempalace_mine_status` — Show current mining progress: status bar, elapsed, ETA, current file.
-  Call at any time — before, during, or after a mine run.
+  - `job_id` (optional): check a specific job. Omit to see all active jobs.
   Returns a `display` field with the full rendered output, plus raw counters.
+- `mempalace_mine_cancel` — Cancel a running or queued mining job.
+  - `job_id` (required): the job to cancel
 
 ### Search & Browse
 - `mempalace_search` — Semantic search across all memories.
