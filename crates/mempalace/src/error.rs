@@ -18,4 +18,6 @@ pub enum MpError {
     PalaceNotFound(String),
     #[error("Mine already running")]
     MineAlreadyRunning,
+    #[error("Redb error: {0}")]
+    Redb(String),
 }
