@@ -11,6 +11,7 @@ pub struct MineJob {
     pub job_id: String,
     pub dir: String,
     pub wing: String,
+    pub force: bool,
     pub status: MineJobStatus,
     pub progress: Option<MineProgress>,
     pub error: Option<String>,
@@ -39,7 +40,7 @@ impl JobManager {
         }
     }
 
-    pub async fn submit_job(&self, dir: String, wing: String) -> String {
+    pub async fn submit_job(&self, dir: String, wing: String, force: bool) -> String {
         let mut jobs = self.jobs.lock().await;
 
         for (id, job) in jobs.iter() {
@@ -56,6 +57,7 @@ impl JobManager {
             job_id: job_id.clone(),
             dir,
             wing,
+            force,
             status: MineJobStatus::Queued,
             progress: None,
             error: None,
@@ -144,5 +146,12 @@ impl JobManager {
 
     pub fn max_concurrent(&self) -> usize {
         self.max_concurrent
+    }
+
+    pub async fn is_cancelled(&self, job_id: &str) -> bool {
+        let jobs = self.jobs.lock().await;
+        jobs.get(job_id)
+            .map(|j| j.status == MineJobStatus::Cancelled)
+            .unwrap_or(false)
     }
 }

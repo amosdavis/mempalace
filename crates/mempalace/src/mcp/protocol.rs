@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::config::MempalaceConfig;
 use crate::mcp::jobs::{JobManager, MineJobStatus};
 use crate::mcp::tools;
-use crate::mining::mine_project;
+use crate::mining::mine_project_with_store;
 use crate::mining::progress::{MineProgress, MineStatus};
 use crate::storage::{Embedder, PalaceStore};
 
@@ -16,7 +16,7 @@ pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), anyho
         .unwrap_or_else(|| config.palace_path.clone());
 
     let store = Arc::new(PalaceStore::open(&palace_path)?);
-    let job_manager = Arc::new(JobManager::new(2));
+    let job_manager = Arc::new(JobManager::new(8));
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -131,7 +131,7 @@ async fn handle_tool_call(
                 .to_string();
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
-            let job_id = job_manager.submit_job(dir.clone(), wing.clone()).await;
+            let job_id = job_manager.submit_job(dir.clone(), wing.clone(), force).await;
 
             if !job_manager.can_start().await {
                 return json!({
@@ -146,37 +146,15 @@ async fn handle_tool_call(
                 });
             }
 
-            let jm = Arc::clone(job_manager);
-            let pp = palace_path.to_string();
-            let ed = config.embedding_device.clone();
-            let jid = job_id.clone();
-
-            tokio::task::spawn_blocking(move || {
-                let rt = tokio::runtime::Handle::current();
-                let embedder = Embedder::new(&ed);
-                let prog = MineProgress::new(&dir, &wing, 0).with_job_id(&jid);
-                rt.block_on(jm.mark_running(&jid, prog));
-
-                match mine_project(
-                    std::path::Path::new(&dir),
-                    &pp,
-                    &wing,
-                    Some(&embedder),
-                    force,
-                ) {
-                    Ok(stats) => {
-                        let mut final_prog = MineProgress::new(&dir, &wing, stats.files_processed)
-                            .with_job_id(&jid);
-                        final_prog.status = MineStatus::Done;
-                        final_prog.files_done = stats.files_processed;
-                        final_prog.chunks_created = stats.chunks_created;
-                        rt.block_on(jm.mark_done(&jid, final_prog));
-                    }
-                    Err(e) => {
-                        rt.block_on(jm.mark_failed(&jid, e.to_string()));
-                    }
-                }
-            });
+            spawn_mine_job(
+                Arc::clone(job_manager),
+                Arc::clone(store),
+                config.embedding_device.clone(),
+                job_id.clone(),
+                dir,
+                wing,
+                force,
+            );
 
             json!({
                 "jsonrpc": "2.0", "id": id.clone(),
@@ -403,3 +381,67 @@ pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn spawn_mine_job(
+    jm: Arc<JobManager>,
+    store: Arc<PalaceStore>,
+    embedding_device: String,
+    job_id: String,
+    dir: String,
+    wing: String,
+    force: bool,
+) {
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
+        let embedder = Embedder::new(&embedding_device);
+        let prog = MineProgress::new(&dir, &wing, 0).with_job_id(&job_id);
+        rt.block_on(jm.mark_running(&job_id, prog));
+
+        match mine_project_with_store(
+            std::path::Path::new(&dir),
+            &store,
+            &wing,
+            Some(&embedder),
+            force,
+        ) {
+            Ok(stats) => {
+                let mut final_prog = MineProgress::new(&dir, &wing, stats.files_processed)
+                    .with_job_id(&job_id);
+                final_prog.status = MineStatus::Done;
+                final_prog.files_done = stats.files_processed;
+                final_prog.chunks_created = stats.chunks_created;
+                rt.block_on(jm.mark_done(&job_id, final_prog));
+            }
+            Err(e) => {
+                rt.block_on(jm.mark_failed(&job_id, e.to_string()));
+            }
+        }
+
+        drain_queue(rt, jm, store, embedding_device);
+    });
+}
+
+fn drain_queue(
+    rt: tokio::runtime::Handle,
+    jm: Arc<JobManager>,
+    store: Arc<PalaceStore>,
+    embedding_device: String,
+) {
+    while rt.block_on(jm.can_start()) {
+        let next = rt.block_on(jm.next_queued());
+        match next {
+            Some(job) if !rt.block_on(jm.is_cancelled(&job.job_id)) => {
+                let jm2 = Arc::clone(&jm);
+                let store2 = Arc::clone(&store);
+                let ed2 = embedding_device.clone();
+                let jid = job.job_id.clone();
+                let dir = job.dir.clone();
+                let wing = job.wing.clone();
+                let force = job.force;
+
+                spawn_mine_job(jm2, store2, ed2, jid, dir, wing, force);
+                break;
+            }
+            _ => break,
+        }
+    }
+}

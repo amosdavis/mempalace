@@ -52,6 +52,16 @@ pub fn mine_project(
     force: bool,
 ) -> Result<MineStats, MpError> {
     let store = PalaceStore::open(palace_path)?;
+    mine_project_with_store(project_dir, &store, wing, embedder, force)
+}
+
+pub fn mine_project_with_store(
+    project_dir: &Path,
+    store: &PalaceStore,
+    wing: &str,
+    embedder: Option<&Embedder>,
+    force: bool,
+) -> Result<MineStats, MpError> {
     let gitignore = GitignoreFilter::new(project_dir);
 
     let files_total = count_mineable_files(project_dir, &gitignore);
