@@ -21,15 +21,13 @@ pub struct RedbPalaceStore {
     db: Arc<Database>,
 }
 
-unsafe impl Send for RedbPalaceStore {}
-unsafe impl Sync for RedbPalaceStore {}
 
 impl RedbPalaceStore {
     pub fn open(palace_path: &str) -> Result<Self, MpError> {
         std::fs::create_dir_all(palace_path)?;
         let db_path = Path::new(palace_path).join("palace.redb");
         let db = Database::create(&db_path).map_err(|e| {
-            MpError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            MpError::Io(std::io::Error::other(e.to_string()))
         })?;
 
         {
@@ -408,19 +406,21 @@ impl RedbPalaceStore {
 
         if let Some(expected_mtime) = mtime {
             let drawers_table = read_txn.open_table(DRAWERS).map_err(map_redb_err)?;
-            for item in table.range(prefix.as_str()..).map_err(map_redb_err)? {
+            let first = table
+                .range(prefix.as_str()..)
+                .map_err(map_redb_err)?
+                .next();
+            if let Some(item) = first {
                 let (key, value) = item.map_err(map_redb_err)?;
-                if !key.value().starts_with(&prefix) {
-                    break;
-                }
-                let drawer_id = value.value();
-                if let Some(bytes) = drawers_table.get(drawer_id).map_err(map_redb_err)? {
-                    let record: DrawerRecord = serde_json::from_slice(bytes.value())?;
-                    if record.source_mtime == Some(expected_mtime) {
-                        return Ok(true);
+                if key.value().starts_with(&prefix) {
+                    let drawer_id = value.value();
+                    if let Some(bytes) = drawers_table.get(drawer_id).map_err(map_redb_err)? {
+                        let record: DrawerRecord = serde_json::from_slice(bytes.value())?;
+                        if record.source_mtime == Some(expected_mtime) {
+                            return Ok(true);
+                        }
                     }
                 }
-                break;
             }
             return Ok(false);
         }
@@ -808,10 +808,7 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 fn map_redb_err(e: impl std::fmt::Display) -> MpError {
-    MpError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        e.to_string(),
-    ))
+    MpError::Redb(e.to_string())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -849,5 +846,233 @@ impl DrawerRecord {
             metadata: self.into_metadata(),
             content,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── fts_encode / fts_decode round-trip ──
+
+    #[test]
+    fn fts_roundtrip_basic() {
+        let ids = vec!["abc123".to_string(), "def456".to_string()];
+        let bytes = fts_encode(&ids);
+        let decoded = fts_decode(&bytes);
+        assert_eq!(decoded, ids);
+    }
+
+    #[test]
+    fn fts_roundtrip_single() {
+        let ids = vec!["only_one".to_string()];
+        let bytes = fts_encode(&ids);
+        let decoded = fts_decode(&bytes);
+        assert_eq!(decoded, ids);
+    }
+
+    #[test]
+    fn fts_decode_empty() {
+        let decoded = fts_decode(b"");
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn fts_decode_legacy_json() {
+        let json = br#"["id1","id2","id3"]"#;
+        let decoded = fts_decode(json);
+        assert_eq!(decoded, vec!["id1", "id2", "id3"]);
+    }
+
+    #[test]
+    fn fts_encode_with_str_refs() {
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let refs: Vec<&String> = ids.iter().collect();
+        let bytes = fts_encode(&refs);
+        let decoded = fts_decode(&bytes);
+        assert_eq!(decoded, ids);
+    }
+
+    // ── tokenize ──
+
+    #[test]
+    fn tokenize_lowercases_and_splits() {
+        let tokens = tokenize("Hello World");
+        assert!(tokens.contains(&"hello".to_string()));
+        assert!(tokens.contains(&"world".to_string()));
+    }
+
+    #[test]
+    fn tokenize_underscore_preserved() {
+        let tokens = tokenize("foo_bar baz");
+        assert!(tokens.contains(&"foo_bar".to_string()));
+        assert!(tokens.contains(&"baz".to_string()));
+    }
+
+    #[test]
+    fn tokenize_min_length_filter() {
+        let tokens = tokenize("a bb ccc");
+        assert!(!tokens.contains(&"a".to_string()));
+        assert!(tokens.contains(&"bb".to_string()));
+        assert!(tokens.contains(&"ccc".to_string()));
+    }
+
+    #[test]
+    fn tokenize_deduplicates() {
+        let tokens = tokenize("rust Rust RUST");
+        assert_eq!(tokens.iter().filter(|t| *t == "rust").count(), 1);
+    }
+
+    #[test]
+    fn tokenize_empty() {
+        assert!(tokenize("").is_empty());
+    }
+
+    // ── Integration tests with tempfile store ──
+
+    fn temp_store() -> RedbPalaceStore {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        RedbPalaceStore::open(tmp.path().to_str().expect("path")).expect("open")
+    }
+
+    #[test]
+    fn upsert_and_get_drawer() {
+        let store = temp_store();
+        let id = store
+            .upsert_drawer("wing_test", "room_a", "hello world", "text", None, None, None, None)
+            .expect("upsert");
+        let drawer = store.get_drawer(&id).expect("get");
+        assert_eq!(drawer.content, "hello world");
+        assert_eq!(drawer.metadata.wing, "wing_test");
+        assert_eq!(drawer.metadata.room, "room_a");
+    }
+
+    #[test]
+    fn delete_drawer_removes() {
+        let store = temp_store();
+        let id = store
+            .upsert_drawer("w", "r", "content", "text", None, None, None, None)
+            .expect("upsert");
+        assert!(store.delete_drawer(&id).expect("delete"));
+        assert!(store.get_drawer(&id).is_err());
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_false() {
+        let store = temp_store();
+        assert!(!store.delete_drawer("nonexistent").expect("delete"));
+    }
+
+    #[test]
+    fn list_wings_after_inserts() {
+        let store = temp_store();
+        store.upsert_drawer("alpha", "r1", "c1", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("beta", "r2", "c2", "text", None, None, None, None).unwrap();
+        let wings = store.list_wings().unwrap();
+        assert!(wings.contains(&"alpha".to_string()));
+        assert!(wings.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn list_rooms_after_inserts() {
+        let store = temp_store();
+        store.upsert_drawer("w", "room_a", "c1", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("w", "room_b", "c2", "text", None, None, None, None).unwrap();
+        let rooms = store.list_rooms("w").unwrap();
+        assert!(rooms.contains(&"room_a".to_string()));
+        assert!(rooms.contains(&"room_b".to_string()));
+    }
+
+    #[test]
+    fn count_drawers_total_and_per_wing() {
+        let store = temp_store();
+        store.upsert_drawer("w1", "r", "a", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("w1", "r", "b", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("w2", "r", "c", "text", None, None, None, None).unwrap();
+        assert_eq!(store.count_drawers(None).unwrap(), 3);
+        assert_eq!(store.count_drawers(Some("w1")).unwrap(), 2);
+        assert_eq!(store.count_drawers(Some("w2")).unwrap(), 1);
+    }
+
+    #[test]
+    fn list_drawers_with_content_returns_content() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "payload", "text", None, None, None, None).unwrap();
+        let results = store.list_drawers_with_content(Some("w"), None, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "payload");
+    }
+
+    #[test]
+    fn get_stats_returns_valid_json() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "test", "text", None, None, None, None).unwrap();
+        let stats = store.get_stats().unwrap();
+        assert_eq!(stats["total_drawers"], 1);
+    }
+
+    #[test]
+    fn fts_search_finds_content() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "the quick brown fox jumps", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("w", "r", "lazy dog sleeping", "text", None, None, None, None).unwrap();
+        let results = store.fts_search("quick fox", None, None, 10).unwrap();
+        assert!(!results.is_empty());
+        assert!(results[0].1.contains("quick"));
+    }
+
+    #[test]
+    fn fts_search_empty_query() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "content", "text", None, None, None, None).unwrap();
+        let results = store.fts_search("", None, None, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn replace_file_drawers_atomicity() {
+        let store = temp_store();
+        // Insert initial drawers for a file
+        store.upsert_drawer("w", "r", "old chunk 1", "code", Some("src/main.rs"), Some(1000.0), Some(0), None).unwrap();
+        store.upsert_drawer("w", "r", "old chunk 2", "code", Some("src/main.rs"), Some(1000.0), Some(1), None).unwrap();
+        assert_eq!(store.count_drawers(Some("w")).unwrap(), 2);
+
+        // Replace with new chunks
+        let chunks: Vec<(&str, Option<&[f32]>)> = vec![
+            ("new chunk A", None),
+            ("new chunk B", None),
+            ("new chunk C", None),
+        ];
+        let (count, _) = store.replace_file_drawers("w", "r", "src/main.rs", &chunks, Some(2000.0)).unwrap();
+        assert_eq!(count, 3);
+
+        // Old drawers should be gone, new ones present
+        let all = store.list_drawers_with_content(Some("w"), None, 100).unwrap();
+        assert_eq!(all.len(), 3);
+        let contents: Vec<&str> = all.iter().map(|(_, c)| c.as_str()).collect();
+        assert!(contents.contains(&"new chunk A"));
+        assert!(contents.contains(&"new chunk B"));
+        assert!(contents.contains(&"new chunk C"));
+    }
+
+    #[test]
+    fn tunnel_crud() {
+        let store = temp_store();
+        let tunnel = TunnelRecord {
+            tunnel_id: "t1".to_string(),
+            from_wing: "w1".to_string(),
+            from_room: "r1".to_string(),
+            to_wing: "w2".to_string(),
+            to_room: "r2".to_string(),
+            note: Some("test".to_string()),
+            created_at: 0.0,
+        };
+        store.create_tunnel(&tunnel).unwrap();
+        let tunnels = store.list_tunnels(None).unwrap();
+        assert_eq!(tunnels.len(), 1);
+        assert_eq!(tunnels[0].tunnel_id, "t1");
+
+        assert!(store.delete_tunnel("t1").unwrap());
+        assert!(store.list_tunnels(None).unwrap().is_empty());
     }
 }

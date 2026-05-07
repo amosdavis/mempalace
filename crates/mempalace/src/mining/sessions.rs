@@ -102,7 +102,7 @@ fn mine_sessions_dir(
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.file_type().is_file()
-                && e.path().extension().map_or(false, |x| x == "jsonl")
+                && e.path().extension().is_some_and(|x| x == "jsonl")
         })
         .collect();
 

@@ -181,7 +181,7 @@ pub fn run_stop() -> Result<()> {
 
         // Mine the transcript directory in the background.
         let transcript_path = Path::new(&input.transcript_path);
-        if transcript_path.extension().map_or(false, |e| e == "jsonl" || e == "json")
+        if transcript_path.extension().is_some_and(|e| e == "jsonl" || e == "json")
             && !input.transcript_path.contains("..")
             && transcript_path.exists()
         {
@@ -227,7 +227,7 @@ pub fn run_precompact() -> Result<()> {
     log(&dir, &format!("PRE-COMPACT triggered for session {sid}"));
 
     let transcript_path = Path::new(&input.transcript_path);
-    if transcript_path.extension().map_or(false, |e| e == "jsonl" || e == "json")
+    if transcript_path.extension().is_some_and(|e| e == "jsonl" || e == "json")
         && !input.transcript_path.contains("..")
         && transcript_path.exists()
     {

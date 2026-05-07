@@ -34,7 +34,7 @@ pub fn search_memories(
     max_distance: f32,
     vector_disabled: bool,
 ) -> Result<SearchMemoriesResult, MpError> {
-    let n_results = n_results.max(1).min(100);
+    let n_results = n_results.clamp(1, 100);
     let max_distance = if max_distance <= 0.0 || max_distance > 2.0 {
         1.5
     } else {
@@ -92,7 +92,8 @@ pub fn search_memories(
         });
     }
 
-    let embedder = embedder.unwrap();
+    // SAFETY: `use_vector` is only true when `embedder.map(|e| e.is_available())` is Some(true)
+    let embedder = embedder.expect("embedder verified as Some by use_vector check above");
     let query_embedding = embedder.embed(&[query])?;
     let query_vec = &query_embedding[0];
 
@@ -139,4 +140,75 @@ pub fn search_memories(
         total_searched,
         vector_enabled: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::redb_store::RedbPalaceStore;
+
+    fn temp_store() -> PalaceStore {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        RedbPalaceStore::open(tmp.path().to_str().expect("path")).expect("open")
+    }
+
+    #[test]
+    fn search_bm25_only_no_embedder() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "rust programming language", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("w", "r", "python scripting", "text", None, None, None, None).unwrap();
+
+        let result = search_memories("rust", &store, None, None, None, 5, 1.5, false).unwrap();
+        assert!(!result.results.is_empty());
+        assert!(!result.vector_enabled);
+    }
+
+    #[test]
+    fn search_vector_disabled_flag() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "some content here", "text", None, None, None, None).unwrap();
+
+        let result = search_memories("content", &store, None, None, None, 5, 1.5, true).unwrap();
+        assert!(!result.vector_enabled);
+    }
+
+    #[test]
+    fn search_empty_store() {
+        let store = temp_store();
+        let result = search_memories("anything", &store, None, None, None, 5, 1.5, false).unwrap();
+        assert!(result.results.is_empty());
+    }
+
+    #[test]
+    fn search_respects_n_results_cap() {
+        let store = temp_store();
+        for i in 0..20 {
+            store.upsert_drawer("w", "r", &format!("document number {i} about rust"), "text", None, None, None, None).unwrap();
+        }
+
+        let result = search_memories("rust", &store, None, None, None, 3, 1.5, false).unwrap();
+        assert!(result.results.len() <= 3);
+    }
+
+    #[test]
+    fn search_filters_by_wing() {
+        let store = temp_store();
+        store.upsert_drawer("wing_a", "r", "rust programming", "text", None, None, None, None).unwrap();
+        store.upsert_drawer("wing_b", "r", "rust language", "text", None, None, None, None).unwrap();
+
+        let result = search_memories("rust", &store, None, Some("wing_a"), None, 10, 1.5, false).unwrap();
+        for r in &result.results {
+            assert_eq!(r.wing, "wing_a");
+        }
+    }
+
+    #[test]
+    fn search_clamps_n_results() {
+        let store = temp_store();
+        store.upsert_drawer("w", "r", "test content", "text", None, None, None, None).unwrap();
+
+        // n_results=0 should be clamped to 1
+        let result = search_memories("test", &store, None, None, None, 0, 1.5, false).unwrap();
+        assert!(result.results.len() <= 1);
+    }
 }

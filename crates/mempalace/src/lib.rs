@@ -1,7 +1,6 @@
 pub mod config;
 pub mod error;
 pub mod sanitize;
-pub mod wal;
 pub mod storage;
 pub mod search;
 pub mod kg;

@@ -1,7 +1,9 @@
 use crate::config::MempalaceConfig;
+use crate::error::MpError;
 use crate::kg::KnowledgeGraph;
 use crate::mining::progress::read_progress;
 use crate::palace_graph::PalaceGraph;
+use crate::sanitize::{sanitize_content, sanitize_kg_value, sanitize_name};
 use crate::search::hybrid::search_memories;
 use crate::storage::{Embedder, PalaceStore};
 use serde_json::{json, Value};
@@ -162,6 +164,7 @@ pub fn tool_names() -> Vec<&'static str> {
         "mempalace_kg_stats",
         "mempalace_mine_project",
         "mempalace_mine_status",
+        "mempalace_mine_cancel",
         "mempalace_tunnel_create",
         "mempalace_tunnel_list",
         "mempalace_tunnel_delete",
@@ -178,7 +181,7 @@ pub fn tool_names() -> Vec<&'static str> {
     ]
 }
 
-pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &str) -> Result<Value, anyhow::Error> {
+pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &str) -> Result<Value, MpError> {
     let config = MempalaceConfig::load();
 
     match name {
@@ -204,36 +207,37 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
         }
 
         "mempalace_remember" => {
-            let content = args["content"].as_str().unwrap_or("");
-            let wing = args["wing"].as_str().unwrap_or("wing_user");
-            let room = args["room"].as_str().unwrap_or("general");
+            let content = sanitize_content(args["content"].as_str().unwrap_or(""))?;
+            let wing = sanitize_name(args["wing"].as_str().unwrap_or("wing_user"), "wing")?;
+            let room = sanitize_name(args["room"].as_str().unwrap_or("general"), "room")?;
             let type_ = args.get("type").and_then(|v| v.as_str()).unwrap_or("text");
             let embedder = Embedder::new(&config.embedding_device);
-            let embs = embedder.embed(&[content]).ok();
+            let embs = embedder.embed(&[&content]).ok();
             let emb = embs.as_ref().and_then(|e| e.first().map(|v| v.as_slice()));
-            let id = store.upsert_drawer(wing, room, content, type_, None, None, None, emb)?;
-            Ok(json!({"drawer_id": id, "wing": wing, "room": room, "status": "saved"}))
+            let id = store.upsert_drawer(&wing, &room, &content, type_, None, None, None, emb)?;
+            Ok(json!({"drawer_id": id, "wing": &wing, "room": &room, "status": "saved"}))
         }
 
         "mempalace_diary_write" => {
-            let content = args["content"].as_str().unwrap_or("");
+            let content = sanitize_content(args["content"].as_str().unwrap_or(""))?;
             let wing = args.get("wing").and_then(|v| v.as_str()).unwrap_or("wing_agent");
             let room = chrono::Utc::now().format("diary-%Y-%m-%d").to_string();
             let embedder = Embedder::new(&config.embedding_device);
-            let embs = embedder.embed(&[content]).ok();
+            let embs = embedder.embed(&[&content]).ok();
             let emb = embs.as_ref().and_then(|e| e.first().map(|v| v.as_slice()));
-            let id = store.upsert_drawer(wing, &room, content, "diary", None, None, None, emb)?;
+            let id = store.upsert_drawer(wing, &room, &content, "diary", None, None, None, emb)?;
             Ok(json!({"drawer_id": id, "wing": wing, "room": room, "status": "saved"}))
         }
 
         "mempalace_diary_read" => {
             let wing = args.get("wing").and_then(|v| v.as_str()).unwrap_or("wing_agent");
             let n = args.get("n").and_then(|v| v.as_i64()).unwrap_or(10);
-            let drawers = store.list_drawers(Some(wing), None, Some(n))?;
-            let entries: Vec<Value> = drawers.into_iter().map(|m| {
-                let content = store.get_drawer(&m.drawer_id).map(|d| d.content).unwrap_or_default();
-                json!({"drawer_id": m.drawer_id, "room": m.room, "content": content})
-            }).collect();
+            let entries: Vec<Value> = store
+                .list_drawers_with_content(Some(wing), None, n)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(m, content)| json!({"drawer_id": m.drawer_id, "room": m.room, "content": content}))
+                .collect();
             Ok(json!({"entries": entries, "wing": wing}))
         }
 
@@ -267,23 +271,23 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
         }
 
         "mempalace_kg_add_entity" => {
-            let name = args["name"].as_str().unwrap_or("");
+            let name = sanitize_kg_value(args["name"].as_str().unwrap_or(""), "name")?;
             let etype = args.get("entity_type").and_then(|v| v.as_str()).unwrap_or("person");
             let attrs = args.get("attributes").cloned().unwrap_or(json!({}));
             let kg = KnowledgeGraph::open(&MempalaceConfig::knowledge_graph_path())?;
-            let id = kg.add_entity(name, etype, &attrs)?;
-            Ok(json!({"entity_id": id, "name": name, "status": "saved"}))
+            let id = kg.add_entity(&name, etype, &attrs)?;
+            Ok(json!({"entity_id": id, "name": &name, "status": "saved"}))
         }
 
         "mempalace_kg_add_triple" => {
-            let s = args["subject"].as_str().unwrap_or("");
-            let p = args["predicate"].as_str().unwrap_or("");
-            let o = args["object"].as_str().unwrap_or("");
+            let s = sanitize_kg_value(args["subject"].as_str().unwrap_or(""), "subject")?;
+            let p = sanitize_kg_value(args["predicate"].as_str().unwrap_or(""), "predicate")?;
+            let o = sanitize_kg_value(args["object"].as_str().unwrap_or(""), "object")?;
             let vf = args.get("valid_from").and_then(|v| v.as_str());
             let vt = args.get("valid_to").and_then(|v| v.as_str());
             let src = args.get("source").and_then(|v| v.as_str());
             let kg = KnowledgeGraph::open(&MempalaceConfig::knowledge_graph_path())?;
-            let id = kg.add_triple(s, p, o, vf, vt, src)?;
+            let id = kg.add_triple(&s, &p, &o, vf, vt, src)?;
             Ok(json!({"triple_id": id, "status": "saved"}))
         }
 
@@ -298,11 +302,11 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
         }
 
         "mempalace_kg_invalidate" => {
-            let tid = args["triple_id"].as_str().unwrap_or("");
-            let vt = args["valid_to"].as_str().unwrap_or("");
+            let tid = sanitize_kg_value(args["triple_id"].as_str().unwrap_or(""), "triple_id")?;
+            let vt = sanitize_kg_value(args["valid_to"].as_str().unwrap_or(""), "valid_to")?;
             let kg = KnowledgeGraph::open(&MempalaceConfig::knowledge_graph_path())?;
-            let ok = kg.invalidate_triple(tid, vt)?;
-            Ok(json!({"triple_id": tid, "invalidated": ok}))
+            let ok = kg.invalidate_triple(&tid, &vt)?;
+            Ok(json!({"triple_id": &tid, "invalidated": ok}))
         }
 
         "mempalace_kg_timeline" => {
@@ -317,9 +321,9 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
         }
 
         "mempalace_mine_project" => {
-            Err(anyhow::anyhow!(
+            Err(MpError::Validation(
                 "mempalace_mine_project requires the async MCP server. \
-                 Ensure mempalace is started via `mempalace mcp` (tokio runtime)."
+                 Ensure mempalace is started via `mempalace mcp` (tokio runtime).".into()
             ))
         }
 
@@ -346,12 +350,12 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
         }
 
         "mempalace_tunnel_create" => {
-            let fw = args["from_wing"].as_str().unwrap_or("");
-            let fr = args["from_room"].as_str().unwrap_or("");
-            let tw = args["to_wing"].as_str().unwrap_or("");
-            let tr = args["to_room"].as_str().unwrap_or("");
+            let fw = sanitize_name(args["from_wing"].as_str().unwrap_or(""), "from_wing")?;
+            let fr = sanitize_name(args["from_room"].as_str().unwrap_or(""), "from_room")?;
+            let tw = sanitize_name(args["to_wing"].as_str().unwrap_or(""), "to_wing")?;
+            let tr = sanitize_name(args["to_room"].as_str().unwrap_or(""), "to_room")?;
             let note = args.get("note").and_then(|v| v.as_str());
-            let id = PalaceGraph::create_tunnel(store, fw, fr, tw, tr, note)?;
+            let id = PalaceGraph::create_tunnel(store, &fw, &fr, &tw, &tr, note)?;
             Ok(json!({"tunnel_id": id, "status": "created"}))
         }
 
@@ -410,18 +414,18 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
 
         "mempalace_bulk_remember" => {
             let entries = args["entries"].as_array().cloned().unwrap_or_default();
-            let wing = args["wing"].as_str().unwrap_or("wing_user");
+            let wing = sanitize_name(args["wing"].as_str().unwrap_or("wing_user"), "wing")?;
             let embedder = Embedder::new(&config.embedding_device);
             let mut saved = 0usize;
             let total = entries.len();
             for entry in &entries {
-                let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let room = entry.get("room").and_then(|v| v.as_str()).unwrap_or("general");
+                let content = sanitize_content(entry.get("content").and_then(|v| v.as_str()).unwrap_or(""))?;
+                let room = sanitize_name(entry.get("room").and_then(|v| v.as_str()).unwrap_or("general"), "room")?;
                 let type_ = entry.get("type").and_then(|v| v.as_str()).unwrap_or("text");
                 if content.is_empty() { continue; }
-                let embs = embedder.embed(&[content]).ok();
+                let embs = embedder.embed(&[content.as_str()]).ok();
                 let emb = embs.as_ref().and_then(|e| e.first().map(|v| v.as_slice()));
-                store.upsert_drawer(wing, room, content, type_, None, None, None, emb)?;
+                store.upsert_drawer(&wing, &room, &content, type_, None, None, None, emb)?;
                 saved += 1;
             }
             Ok(json!({"saved": saved, "total": total}))
@@ -452,6 +456,6 @@ pub fn call_tool(name: &str, args: &Value, store: &PalaceStore, _palace_path: &s
             }))
         }
 
-        _ => Err(anyhow::anyhow!("Unknown tool: {name}")),
+        _ => Err(MpError::NotFound(format!("Unknown tool: {name}"))),
     }
 }

@@ -17,13 +17,13 @@ use crate::mining::mine_project_with_store;
 use crate::mining::progress::{MineProgress, MineStatus};
 use crate::storage::{Embedder, PalaceStore};
 
-pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
+pub async fn run_mcp_server_async(palace_path: Option<&str>) -> Result<(), crate::error::MpError> {
     let config = MempalaceConfig::load();
     let palace_path = palace_path
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.palace_path.clone());
 
-    let max_jobs = config.max_concurrent_jobs.min(64).max(1);
+    let max_jobs = config.max_concurrent_jobs.clamp(1, 64);
     let store = Arc::new(PalaceStore::open(&palace_path)?);
     let job_manager = Arc::new(JobManager::new(max_jobs));
 
@@ -330,7 +330,7 @@ async fn handle_tool_call(
     }
 }
 
-pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), anyhow::Error> {
+pub fn run_mcp_server(palace_path: Option<&str>) -> Result<(), crate::error::MpError> {
     let config = MempalaceConfig::load();
     let palace_path = palace_path
         .map(|s| s.to_string())
@@ -471,22 +471,19 @@ fn drain_queue(
     store: Arc<PalaceStore>,
     embedding_device: String,
 ) {
-    while rt.block_on(jm.can_start()) {
-        let next = rt.block_on(jm.next_queued());
-        match next {
-            Some(job) if !rt.block_on(jm.is_cancelled(&job.job_id)) => {
-                let jm2 = Arc::clone(&jm);
-                let store2 = Arc::clone(&store);
-                let ed2 = embedding_device.clone();
-                let jid = job.job_id.clone();
-                let dir = job.dir.clone();
-                let wing = job.wing.clone();
-                let force = job.force;
-
-                spawn_mine_job(jm2, store2, ed2, jid, dir, wing, force);
-                break;
+    if rt.block_on(jm.can_start()) {
+        if let Some(job) = rt.block_on(jm.next_queued()) {
+            if !rt.block_on(jm.is_cancelled(&job.job_id)) {
+                spawn_mine_job(
+                    Arc::clone(&jm),
+                    Arc::clone(&store),
+                    embedding_device,
+                    job.job_id.clone(),
+                    job.dir.clone(),
+                    job.wing.clone(),
+                    job.force,
+                );
             }
-            _ => break,
         }
     }
 }

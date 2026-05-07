@@ -221,11 +221,11 @@ pub fn mine_project_with_store(
         });
 
         drop(tx);
-        writer_handle.join().unwrap();
+        writer_handle.join().expect("FTS writer thread panicked");
     });
 
     let final_errors = Arc::try_unwrap(errors)
-        .unwrap_or_else(|arc| arc.lock().unwrap().clone().into())
+        .unwrap_or_else(|arc| arc.lock().expect("errors mutex poisoned").clone().into())
         .into_inner()
         .unwrap_or_default();
 
@@ -233,7 +233,7 @@ pub fn mine_project_with_store(
     write_progress(&prog);
     let index = match Arc::try_unwrap(fts_index) {
         Ok(mutex) => mutex.into_inner().unwrap_or_default(),
-        Err(arc) => arc.lock().unwrap().clone(),
+        Err(arc) => arc.lock().expect("fts_index mutex poisoned").clone(),
     };
     let _ = store.flush_fts_index(&index);
 

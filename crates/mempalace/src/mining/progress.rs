@@ -112,10 +112,10 @@ impl MineProgress {
             }
         }
 
-        if !self.current_file.is_empty() {
-            if matches!(self.status, MineStatus::Running) {
-                lines.push(format!("   Current  {}", self.current_file));
-            }
+        if !self.current_file.is_empty()
+            && matches!(self.status, MineStatus::Running)
+        {
+            lines.push(format!("   Current  {}", self.current_file));
         }
 
         if self.errors_count > 0 {

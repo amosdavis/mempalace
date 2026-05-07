@@ -60,3 +60,78 @@ pub fn bm25_scores(query: &str, documents: &[&str]) -> Vec<f64> {
     }
     scores
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_filters_stop_words() {
+        let tokens = tokenize("the quick brown fox is on a log");
+        assert!(!tokens.contains(&"the".to_string()));
+        assert!(!tokens.contains(&"is".to_string()));
+        assert!(!tokens.contains(&"on".to_string()));
+        assert!(!tokens.contains(&"a".to_string()));
+        assert!(tokens.contains(&"quick".to_string()));
+        assert!(tokens.contains(&"brown".to_string()));
+        assert!(tokens.contains(&"fox".to_string()));
+        assert!(tokens.contains(&"log".to_string()));
+    }
+
+    #[test]
+    fn tokenize_splits_punctuation() {
+        let tokens = tokenize("hello, world! foo-bar");
+        assert!(tokens.contains(&"hello".to_string()));
+        assert!(tokens.contains(&"world".to_string()));
+        assert!(tokens.contains(&"foo".to_string()));
+        assert!(tokens.contains(&"bar".to_string()));
+    }
+
+    #[test]
+    fn tokenize_lowercases() {
+        let tokens = tokenize("Hello WORLD FoO");
+        assert!(tokens.contains(&"hello".to_string()));
+        assert!(tokens.contains(&"world".to_string()));
+        assert!(tokens.contains(&"foo".to_string()));
+    }
+
+    #[test]
+    fn tokenize_empty_input() {
+        assert!(tokenize("").is_empty());
+    }
+
+    #[test]
+    fn bm25_empty_query() {
+        let scores = bm25_scores("", &["hello world"]);
+        assert_eq!(scores, vec![0.0]);
+    }
+
+    #[test]
+    fn bm25_empty_documents() {
+        let scores = bm25_scores("hello", &[]);
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn bm25_exact_match_scores_higher() {
+        let docs = &["rust programming language", "python programming language", "rust rust rust"];
+        let scores = bm25_scores("rust", docs);
+        assert!(scores[0] > scores[1], "exact match should beat no match");
+        assert!(scores[2] > scores[0], "repeated term should score highest");
+    }
+
+    #[test]
+    fn bm25_no_match_scores_zero() {
+        let docs = &["hello world", "foo bar"];
+        let scores = bm25_scores("xyz", docs);
+        assert_eq!(scores[0], 0.0);
+        assert_eq!(scores[1], 0.0);
+    }
+
+    #[test]
+    fn bm25_single_document() {
+        let docs = &["the quick brown fox"];
+        let scores = bm25_scores("quick fox", docs);
+        assert!(scores[0] > 0.0, "matching terms should produce positive score");
+    }
+}

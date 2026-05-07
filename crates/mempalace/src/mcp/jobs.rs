@@ -80,13 +80,6 @@ impl JobManager {
         }
     }
 
-    pub async fn update_progress(&self, job_id: &str, progress: MineProgress) {
-        let mut jobs = self.jobs.lock().await;
-        if let Some(job) = jobs.get_mut(job_id) {
-            job.progress = Some(progress);
-        }
-    }
-
     pub async fn mark_done(&self, job_id: &str, progress: MineProgress) {
         let mut jobs = self.jobs.lock().await;
         if let Some(job) = jobs.get_mut(job_id) {
